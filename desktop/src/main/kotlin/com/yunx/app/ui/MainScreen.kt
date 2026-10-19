@@ -194,6 +194,12 @@ fun MainScreen(
     onMinimizeToTray: () -> Unit = {}
 ) {
     var currentTab by rememberSaveable { mutableStateOf(MainTab.Resolve) }
+    /**
+     * 「回到网盘总览」信号：点侧栏「网盘」Tab（已在网盘页时）或离开网盘 Tab 时自增，
+     * DriveScreen 消费后把所有网盘浏览态复位。没有它的话，浏览页的开关是 rememberSaveable，
+     * 侧栏点回网盘仍停在刚才那个网盘里，用户找不到回总览的入口。
+     */
+    var driveHomeSignal by remember { mutableStateOf(0) }
     // 网盘页：四宫格 / 列表布局切换
     var driveGridMode by rememberSaveable { mutableStateOf(false) }
     var showQuarkLogin by rememberSaveable { mutableStateOf(false) }
@@ -595,10 +601,10 @@ fun MainScreen(
     val ilanzouAccount by ilanzouViewModel.ilanzouAccount.collectAsState()
     val lanzouAccount by lanzouViewModel.lanzouAccount.collectAsState()
 
-    // 解析页发起下载后，自动切换到「下载」Tab
+    // 下载入队后不自动切页：连续下载多个文件时切来切去反而打断操作，
+    // 任务已在下载页排队，用户想看进度时自己点侧栏「下载」即可
     LaunchedEffect(resolveViewModel.downloadStarted) {
         if (resolveViewModel.downloadStarted) {
-            currentTab = MainTab.Download
             resolveViewModel.consumeDownloadStarted()
         }
     }
@@ -875,7 +881,9 @@ fun MainScreen(
                             driveQuotaViewModel = driveQuotaViewModel,
                             onQuarkLogin = { showQuarkLogin = true },
                             onQuarkLogout = { viewModel.logout() },
-                            onDownloadStarted = { currentTab = MainTab.Download },
+                            // 网盘页下载同样不自动切页：批量挑文件时留在原目录，进度自己去下载页看
+                            onDownloadStarted = {},
+                            homeSignal = driveHomeSignal,
                             onUCLogin = { showUCLogin = true },
                             onUCLogout = { ucViewModel.logout() },
                             onXunleiLogin = { showXunleiLogin = true },
@@ -945,7 +953,16 @@ fun MainScreen(
             Row(modifier = Modifier.fillMaxSize()) {
                 MainNavigationRail(
                     currentTab = currentTab,
-                    onTabSelected = { currentTab = it }
+                    onTabSelected = {
+                        // 已经在「网盘」Tab 时再点一次 = 从某个网盘的浏览页退回全部网盘
+                        if (it == MainTab.Drive && currentTab == MainTab.Drive) {
+                            driveHomeSignal++
+                        } else if (it != MainTab.Drive) {
+                            // 离开网盘 Tab 时复位，下次进来看到的是总览而不是上次的浏览页
+                            driveHomeSignal++
+                        }
+                        currentTab = it
+                    }
                 )
                 Column(
                     modifier = Modifier
