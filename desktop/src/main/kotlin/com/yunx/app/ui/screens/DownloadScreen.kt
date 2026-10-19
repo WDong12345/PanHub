@@ -106,6 +106,8 @@ fun DownloadScreen(
     val stats by viewModel.stats.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<DownloadTaskEntity?>(null) }
+    // 文件夹组批量删除：先弹确认框再执行
+    var pendingGroupDelete by remember { mutableStateOf<List<DownloadTaskEntity>?>(null) }
     var showDeleteAllConfirm by remember { mutableStateOf(false) }
     // 下载调试页（设置 → 开发调试 → 下载调试 打开后才有入口）：整页替换任务列表，在「下载」Tab 内展开
     var debugTaskId by remember { mutableStateOf<Long?>(null) }
@@ -160,7 +162,9 @@ fun DownloadScreen(
                         .weight(1f)
                         .fillMaxWidth()
                         .nestedScroll(scrollBehavior.nestedScrollConnection),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                    // 底部留出悬浮「+」按钮的高度：否则列表最后一项（常是文件夹组头，
+                    // 上面就有批量暂停/删除按钮）会被按钮盖住，点删除实际点到「+」
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 140.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     // 根目录任务（无相对路径）单独显示
@@ -193,6 +197,9 @@ fun DownloadScreen(
                                 onResume = { viewModel.resume(it) },
                                 onRemove = { pendingDelete = it },
                                 onRedownload = { viewModel.redownload(it) },
+                                onPauseGroup = { group -> viewModel.pauseTasks(group.map { it.id }) },
+                                onResumeGroup = { group -> viewModel.resumeTasks(group.map { it.id }) },
+                                onRemoveGroup = { group -> pendingGroupDelete = group },
                                 onDebug = openDebug
                             )
                         }
@@ -287,6 +294,63 @@ fun DownloadScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteAllConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // 文件夹组批量删除确认：与单条删除一致，可选择是否一并删本地文件
+    pendingGroupDelete?.let { group ->
+        var deleteGroupLocal by remember(group) { mutableStateOf(false) }
+        val hasCompletedFile = group.any {
+            it.status == DownloadTaskEntity.STATUS_COMPLETED && it.savePath.isNotBlank()
+        }
+        val folderName = group.firstOrNull()?.fileName?.substringBefore('/').orEmpty()
+        AlertDialog(
+            onDismissRequest = { pendingGroupDelete = null },
+            title = { Text("删除文件夹内全部任务") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "确定删除「$folderName」下的 ${group.size} 个下载任务吗？删除后任务记录将被清除，且不可恢复。",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (hasCompletedFile) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = deleteGroupLocal,
+                                onCheckedChange = { deleteGroupLocal = it }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "同时删除已下载的本地文件",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        Text(
+                            text = "勾选后将一并删除该文件夹内已下载到 Download 目录的文件，且不可恢复。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val ids = group.map { it.id }
+                        pendingGroupDelete = null
+                        viewModel.removeTasks(ids, deleteGroupLocal)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("删除 ${group.size} 项") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingGroupDelete = null }) { Text("取消") }
             }
         )
     }
@@ -451,6 +515,12 @@ private fun FolderDownloadGroup(
     onResume: (Long) -> Unit,
     onRemove: (DownloadTaskEntity) -> Unit,
     onRedownload: (DownloadTaskEntity) -> Unit,
+    /** 组内批量暂停（只暂停未完成的） */
+    onPauseGroup: (List<DownloadTaskEntity>) -> Unit = {},
+    /** 组内批量继续（只恢复已暂停/失败的） */
+    onResumeGroup: (List<DownloadTaskEntity>) -> Unit = {},
+    /** 组内批量删除：交给上层弹确认框 */
+    onRemoveGroup: (List<DownloadTaskEntity>) -> Unit = {},
     onDebug: ((DownloadTaskEntity) -> Unit)? = null
 ) {
     // ★ 用 rememberSaveable（而非 remember）：切到别的 Tab 再切回来时，
@@ -539,6 +609,52 @@ private fun FolderDownloadGroup(
                     )
                 }
                 Spacer(modifier = Modifier.width(2.dp))
+                // 组内批量操作：一个文件夹动辄上百个文件，逐个点暂停/删除不现实。
+                // 图标按钮自带点击消费，不会连带触发展开/收起。
+                val groupActive = tasks.any {
+                    it.status == DownloadTaskEntity.STATUS_DOWNLOADING ||
+                        it.status == DownloadTaskEntity.STATUS_PENDING
+                }
+                val groupResumable = tasks.any {
+                    it.status == DownloadTaskEntity.STATUS_PAUSED ||
+                        it.status == DownloadTaskEntity.STATUS_FAILED
+                }
+                if (groupActive) {
+                    IconButton(
+                        onClick = { onPauseGroup(tasks) },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Pause,
+                            contentDescription = "暂停文件夹内全部任务",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                } else if (groupResumable) {
+                    IconButton(
+                        onClick = { onResumeGroup(tasks) },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.PlayArrow,
+                            contentDescription = "继续文件夹内全部任务",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = { onRemoveGroup(tasks) },
+                    modifier = Modifier.size(34.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = "删除文件夹内全部任务",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
                 Icon(
                     imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
                     contentDescription = if (expanded) "收起" else "展开",

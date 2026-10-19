@@ -75,6 +75,30 @@ class DownloadViewModel(private val manager: DownloadManager) : ViewModel() {
         tasks.value.toList().forEach { manager.remove(it.id, deleteLocal) }
     }
 
+    /** 批量暂停指定任务（文件夹组用）：只动正在下载 / 等待中的，已完成的不会被踢回暂停态 */
+    fun pauseTasks(ids: List<Long>) {
+        val targets = tasks.value.filter {
+            it.id in ids && (it.status == DownloadTaskEntity.STATUS_DOWNLOADING ||
+                it.status == DownloadTaskEntity.STATUS_PENDING)
+        }
+        targets.forEach { manager.pause(it.id) }
+    }
+
+    /** 批量继续指定任务（文件夹组用）：只恢复已暂停 / 失败的 */
+    fun resumeTasks(ids: List<Long>) {
+        val targets = tasks.value.filter {
+            it.id in ids && (it.status == DownloadTaskEntity.STATUS_PAUSED ||
+                it.status == DownloadTaskEntity.STATUS_FAILED)
+        }
+        targets.forEach { manager.start(it.id) }
+    }
+
+    /** 批量删除指定任务（可同时删除已保存到本地的文件） */
+    fun removeTasks(ids: List<Long>, deleteLocal: Boolean = false) {
+        val targets = tasks.value.filter { it.id in ids }
+        targets.forEach { manager.remove(it.id, deleteLocal) }
+    }
+
     // ---------- 下载调试（设置 → 关于云析 → 长按 → 开发调试 → 下载调试）----------
 
     /** 某任务当前每个在飞分片（= 每个线程正在干什么），调试页每秒拉一次 */
