@@ -332,6 +332,7 @@ class ResolveViewModel(
                             .onSuccess {
                                 saveMessage = "已保存到夸克网盘"
                                 saveTarget = null
+                                savedToCloudTriggered++
                             }
                             .onFailure {
                                 saveMessage = it.message ?: "转存失败"
@@ -354,6 +355,14 @@ class ResolveViewModel(
 
     /** 下载已入队事件：触发后由 UI 切换到下载页 */
     var downloadStarted by mutableStateOf(false)
+        private set
+
+    /**
+     * 夸克转存成功事件：触发后由 UI 切到「夸克网盘」页对应目录。
+     * 夸克下载常被迫「先转存再下」，但转存完还停在解析页，用户得自己找回去 ——
+     * 顺势把人送到刚转存进去的那个目录，再点一次下载即可。
+     */
+    var savedToCloudTriggered by mutableStateOf(0)
         private set
 
     // ---------- 长按多选（解析页文件列表） ----------
@@ -613,6 +622,11 @@ class ResolveViewModel(
 
     fun consumeDownloadStarted() {
         downloadStarted = false
+    }
+
+    /** 消费转存成功跳转事件（避免再次进入解析页时重复切页） */
+    fun consumeSavedToCloud() {
+        savedToCloudTriggered = 0
     }
 
     fun consumeDownloadError() {

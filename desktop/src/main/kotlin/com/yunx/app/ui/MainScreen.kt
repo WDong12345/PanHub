@@ -601,6 +601,20 @@ fun MainScreen(
         }
     }
 
+    // 解析页夸克转存成功后自动进入「夸克网盘」对应目录：转存本是下载的前置动作，
+    // 完事还把人留在解析页，等于让用户自己找回刚存的那个目录
+    var openQuarkCloud by remember { mutableStateOf(false) }
+    LaunchedEffect(resolveViewModel.savedToCloudTriggered) {
+        if (resolveViewModel.savedToCloudTriggered > 0) {
+            resolveViewModel.consumeSavedToCloud()
+            // 转存弹窗与网盘页共用同一个 QuarkCloudViewModel，浏览栈就停在转存目标目录；
+            // 但列表是转存前加载的，刷新一次新文件才会出现
+            quarkCloudViewModel.refresh()
+            openQuarkCloud = true
+            currentTab = MainTab.Drive
+        }
+    }
+
     // 夸克登录页：全屏覆盖（含内嵌 Chromium，见文件末尾的覆盖层组）
     if (showQuarkLogin) {
         QuarkLoginScreen(
@@ -861,6 +875,8 @@ fun MainScreen(
                             ilanzouAccount = ilanzouAccount,
                             lanzouAccount = lanzouAccount,
                             quarkCloudViewModel = quarkCloudViewModel,
+                            openQuarkCloud = openQuarkCloud,
+                            onOpenQuarkCloudConsumed = { openQuarkCloud = false },
                             ucCloudViewModel = ucCloudViewModel,
                             xunleiCloudViewModel = xunleiCloudViewModel,
                             baiduCloudViewModel = baiduCloudViewModel,
