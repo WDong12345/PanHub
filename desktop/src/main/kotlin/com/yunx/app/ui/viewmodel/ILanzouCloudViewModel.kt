@@ -16,6 +16,8 @@ import com.yunx.app.data.network.ILanzouConstants
 import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.repository.ILanzouAccountRepository
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -141,6 +143,34 @@ class ILanzouCloudViewModel(
             nameStack.removeLast()
         }
         load(dirStack.lastOrNull() ?: ILanzouConstants.ROOT_FOLDER_ID, nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的 folderId 链（不含根），左侧树据此逐级展开并高亮。
+     * 树是自顶向下自己拼出 id 链的（没有按 id 反查祖先链的接口），所以只能由这里回填。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /** 目录树状态：根 id 用 "0"，节点 id 与 dirStack 同形态存纯数字 folderId（模型 fid 的 "d:" 前缀要去掉，否则高亮/跳转对不上） */
+    val dirTree = DirTreeState(DirNode(ILanzouConstants.ROOT_FOLDER_ID, "蓝奏云优享版"), viewModelScope) { listSubDirs(it) }
+
+    /** 列子目录（树懒加载）：listFiles 内部已翻页，一次调用即返回该目录全部条目。 */
+    suspend fun listSubDirs(folderId: String): List<DirNode> {
+        val cred = credential()
+        return api.listFiles(cred.appToken, cred.uuid, folderId)
+            .filter { it.isdir }
+            .map { DirNode(folderNumeric(it.fid), it.fname) }
+    }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
+        load(pathIds.lastOrNull() ?: ILanzouConstants.ROOT_FOLDER_ID, pathNames)
     }
 
     // ---------- 多选 ----------
@@ -560,6 +590,7 @@ class ILanzouCloudViewModel(
 
     /** 下拉刷新。 */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current !is ILanzouCloudUiState.Loaded) {
             loadRoot()
@@ -580,6 +611,8 @@ class ILanzouCloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is ILanzouCloudUiState.Loaded) {
             load(current.dirId, current.pathNames)

@@ -17,6 +17,8 @@ import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -115,6 +117,37 @@ class BaiduCloudViewModel(
             nameStack.removeLast()
         }
         load(dirStack.lastOrNull() ?: "/", nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的绝对路径链（不含根 "/"），左侧树据此逐级展开并高亮。
+     * 百度拿绝对路径当目录主键（fidToken 即子目录全路径），比 fid 平台少一层反查：链末元素直接就是当前目录。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /** 目录树状态：根 id 与 loadRoot() 的 "/" 对齐，点开节点就按子目录绝对路径现拉它的下一级 */
+    val dirTree = DirTreeState(DirNode("/", "百度网盘"), viewModelScope) { listSubDirs(it) }
+
+    /**
+     * 按绝对路径列子目录（树懒加载）：fidToken 是百度返回的子目录全路径，直接当节点 id，无需再拼路径。
+     * 注意 listCloudFiles 内部写死 num=100&page=1，单个目录一次最多取回 100 条（既有接口行为，不为此改网络层）。
+     */
+    suspend fun listSubDirs(dirPath: String): List<DirNode> {
+        val cookie = cookieProvider() ?: return emptyList()
+        return api.listCloudFiles(dirPath, cookie)
+            .filter { it.isdir }
+            .map { DirNode(it.fidToken, it.fname) }
+    }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：pathIds 为绝对路径链、末元素即当前目录，空链回根 "/" */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
+        load(pathIds.lastOrNull() ?: "/", pathNames)
     }
 
     // ---------- 多选 ----------
@@ -607,6 +640,7 @@ class BaiduCloudViewModel(
      * Loading 态直接忽略，避免叠加并发加载。
      */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current is BaiduCloudUiState.Loading) return
         // Loaded → 取其 dirPath/pathNames；Error/Loading → 退回根目录字段
@@ -626,6 +660,8 @@ class BaiduCloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is BaiduCloudUiState.Loaded) {
             load(current.dirPath, current.pathNames)

@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -66,6 +69,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.ui.components.FadeAlertDialog
+import com.yunx.app.ui.components.DirTreePanel
 import com.yunx.app.ui.components.ScrollToTopButton
 import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
@@ -116,6 +120,12 @@ fun ILanzouCloudScreen(
     var showMove by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showCreateFolder by remember { mutableStateOf(false) }
+
+    // 列表切到哪个目录，左侧树就把那条路径逐级展开并滚到看得见
+    LaunchedEffect(state) {
+        val s = state
+        if (s is ILanzouCloudUiState.Loaded) viewModel.dirTree.reveal(viewModel.currentPathFids)
+    }
 
     LaunchedEffect(viewModel.cloudMessage) {
         viewModel.cloudMessage?.let {
@@ -175,9 +185,29 @@ fun ILanzouCloudScreen(
                 }
 
                 is ILanzouCloudUiState.Loaded -> Box(modifier = Modifier.fillMaxSize()) {
-                    LazyColumn(
+                    // 左树右列表：树只管「跳到哪个目录」，列表仍是该目录的内容，两者共用 VM。
+                    // 覆盖层（回到顶部/批量栏）留在外层 Box 里：这版 Compose 只有 RowScope/ColumnScope 的
+                    // AnimatedVisibility，被 Row 包着会让它去取无法跨 composable lambda 捕获的 RowScope 接收者。
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        if (viewModel.dirTree.paneVisible) {
+                            DirTreePanel(
+                                state = viewModel.dirTree,
+                                selectedId = s.dirId,
+                                rootTitle = "蓝奏云优享版",
+                                onSelect = { row -> viewModel.openPath(row.pathIds, row.pathNames) },
+                                modifier = Modifier.width(232.dp).fillMaxHeight()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(1.dp)
+                                    .background(MaterialTheme.colorScheme.outlineVariant)
+                            )
+                        }
+                        LazyColumn(
                             state = listState,
                             modifier = Modifier
+                                .weight(1f)
                                 .fillMaxSize()
                                 .nestedScroll(scrollBehavior.nestedScrollConnection),
                             contentPadding = PaddingValues(
@@ -224,6 +254,17 @@ fun ILanzouCloudScreen(
                                                     text = "共 ${s.files.size} 项",
                                                     style = MaterialTheme.typography.bodyMedium,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            // 目录树栏开关：窗口窄的时候收起来，把宽度让给文件列表
+                                            IconButton(onClick = { viewModel.dirTree.togglePane() }) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Layers,
+                                                    contentDescription = if (viewModel.dirTree.paneVisible) "隐藏目录树" else "显示目录树",
+                                                    tint = if (viewModel.dirTree.paneVisible)
+                                                        MaterialTheme.colorScheme.primary
+                                                    else
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             }
                                             IconButton(onClick = { showCreateFolder = true }) {
@@ -314,6 +355,7 @@ fun ILanzouCloudScreen(
                                 )
                             }
                         }
+                    }
 
                     ScrollToTopButton(
                         listState = listState,

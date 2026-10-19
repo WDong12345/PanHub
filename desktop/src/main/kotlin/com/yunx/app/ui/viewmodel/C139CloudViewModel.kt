@@ -16,6 +16,8 @@ import com.yunx.app.data.network.C139Constants
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareInfo
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -114,6 +116,39 @@ class C139CloudViewModel(
             nameStack.removeLast()
         }
         load(dirStack.lastOrNull() ?: "/", nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的 fileId 链（不含根），左侧树据此把路径逐级展开并高亮。
+     * 树是自顶向下自己拼出 fileId 链的（139 没有按 fileId 反查祖先链的接口），
+     * 所以链只能由这里回填，不能反过来让树跳到一个陌生 fileId。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /**
+     * 目录树状态：根 id 必须与 [loadRoot] 压栈的浏览根一致，否则根节点不高亮、reveal 也会错位；
+     * 转存默认目录那个 "0" 是另一个概念，不要混进来。
+     */
+    val dirTree = DirTreeState(DirNode("/", "139网盘"), viewModelScope) { listSubDirs(it) }
+
+    /**
+     * 按 fileId 列子目录（树懒加载）：走只列目录的 listFolders，比列全部文件再过滤干净。
+     * 该接口 pageCursor 写死 NULL，单个目录**最多 100 个子目录**是既有接口行为，不为树去改网络层翻页。
+     */
+    suspend fun listSubDirs(dirId: String): List<DirNode> {
+        val cookie = cookieProvider() ?: return emptyList()
+        return api.listFolders(dirId, cookie).map { DirNode(it.fid, it.fname) }
+    }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
+        load(pathIds.lastOrNull() ?: "/", pathNames)
     }
 
     // ---------- 多选 ----------
@@ -583,6 +618,7 @@ class C139CloudViewModel(
 
     /** 下拉刷新 */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current !is C139CloudUiState.Loaded) {
             loadRoot()
@@ -602,6 +638,8 @@ class C139CloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is C139CloudUiState.Loaded) {
             load(current.dirId, current.pathNames)

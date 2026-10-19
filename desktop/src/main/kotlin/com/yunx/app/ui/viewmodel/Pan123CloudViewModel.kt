@@ -17,6 +17,8 @@ import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -119,6 +121,40 @@ class Pan123CloudViewModel(
             nameStack.removeLast()
         }
         load(dirStack.lastOrNull() ?: "0", nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的 fid 链（不含根），左侧树据此把路径逐级展开并高亮。
+     * 树是自顶向下自己拼出 fid 链的（123 没有按 fileId 反查祖先链的接口），
+     * 所以链只能由这里回填，不能反过来让树跳到一个陌生 fid。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /**
+     * 目录树状态：根为 fileId "0"，与 [loadRoot] 的浏览根同一个值，否则根节点既不选中也让 reveal 错位。
+     * 点开哪个节点就按 fileId 现拉它的子目录。
+     */
+    val dirTree = DirTreeState(DirNode("0", "123云盘"), viewModelScope) { listSubDirs(it) }
+
+    /**
+     * 按 fileId 列子目录（树懒加载）。列目录接口写死 next=0、返回的游标又传不回去，
+     * 单次最多 100 条 —— 这是既有接口行为，不在树里翻页，子目录超过 100 个时这次只显示前 100 个。
+     * 这里不吞异常：失败时 DirTreeState 会把刚点开的节点收回，用户再点即重试。
+     */
+    suspend fun listSubDirs(dirId: String): List<DirNode> =
+        api.listCloudFiles(dirId, token()).first
+            .filter { it.isdir }
+            .map { DirNode(it.fid, it.fname) }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
+        load(pathIds.lastOrNull() ?: "0", pathNames)
     }
 
     // ---------- 多选 ----------
@@ -571,6 +607,7 @@ class Pan123CloudViewModel(
 
     /** 下拉刷新 */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current !is Pan123CloudUiState.Loaded) {
             loadRoot()
@@ -590,6 +627,8 @@ class Pan123CloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is Pan123CloudUiState.Loaded) {
             load(current.dirId, current.pathNames)

@@ -17,6 +17,8 @@ import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -146,6 +148,39 @@ class Pan115CloudViewModel(
             dirStack.removeLast()
             nameStack.removeLast()
         }
+        load(dirStack.lastOrNull() ?: Pan115Constants.ROOT_CID, nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的 cid 链（不含根），左侧树据此把路径逐级展开并高亮。
+     * 树是自顶向下自己拼出 cid 链的（115 没有按 cid 反查祖先链的接口），
+     * 所以链只能由这里回填，不能反过来让树跳到一个陌生 cid。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /**
+     * 目录树状态：根 id 必须与 [loadRoot] 压栈的浏览根同一个常量，否则根节点不高亮、reveal 也会错位。
+     * rootTitle 跟着本页 CrumbBar 的叫法走，两处根名称不一致会让用户以为是两个地方。
+     */
+    val dirTree = DirTreeState(DirNode(Pan115Constants.ROOT_CID, "115网盘"), viewModelScope) { listSubDirs(it) }
+
+    /**
+     * 按 cid 列子目录（树懒加载）：复用 [listAll] 把它那套 offset 翻页翻完，
+     * 树里再写一份循环只会让「115 limit 上限」的理解分成两处跑偏。
+     */
+    suspend fun listSubDirs(dirCid: String): List<DirNode> {
+        val cookie = cookieProvider() ?: return emptyList()
+        return listAll(dirCid, cookie).filter { it.isdir }.map { DirNode(it.fid, it.fname) }
+    }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
         load(dirStack.lastOrNull() ?: Pan115Constants.ROOT_CID, nameStack.toList())
     }
 
@@ -609,6 +644,7 @@ class Pan115CloudViewModel(
 
     /** 下拉刷新 */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current !is Pan115CloudUiState.Loaded) {
             loadRoot()
@@ -628,6 +664,8 @@ class Pan115CloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is Pan115CloudUiState.Loaded) {
             load(current.dirId, current.pathNames)

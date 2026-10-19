@@ -252,6 +252,35 @@ class LanzouApi(
             result
         }
 
+    /**
+     * 只列子目录（取 [listCloudFiles] 已用到的 task=47，服务端一次返回该层全部目录）。
+     * 左侧目录树懒加载专用：[listCloudFiles] 还要按 task=5 翻最多 MAX_FILE_PAGES 页取文件，
+     * 展开一个树节点不该付这个代价。
+     */
+    suspend fun listFolders(cookie: String, uid: String, vei: String, folderId: String): List<ShareFile> =
+        withContext(Dispatchers.IO) {
+            val json = doupload(cookie, uid, vei, listOf("task" to "47", "folder_id" to folderId), allowEnd = true)
+            val arr = json.optJSONArray("text") ?: return@withContext emptyList()
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val id = firstNonBlank(item.optString("fol_id"), item.optString("id"))
+                    if (id.isBlank()) continue
+                    add(
+                        ShareFile(
+                            fid = LanzouConstants.FOLDER_PREFIX + id,
+                            fname = firstNonBlank(item.optString("name"), item.optString("name_all")),
+                            fsize = 0L,
+                            isdir = true,
+                            pdirFid = folderId,
+                            fidToken = "",
+                            modifyTime = item.optString("time")
+                        )
+                    )
+                }
+            }
+        }
+
     /** 新建文件夹，返回新目录 id。 */
     suspend fun createFolder(cookie: String, uid: String, vei: String, parentId: String, name: String): String =
         withContext(Dispatchers.IO) {

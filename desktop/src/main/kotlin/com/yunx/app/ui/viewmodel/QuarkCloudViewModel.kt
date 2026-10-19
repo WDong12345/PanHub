@@ -15,6 +15,8 @@ import com.yunx.app.data.network.QuarkApi
 import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -182,6 +184,44 @@ class QuarkCloudViewModel(
             nameStack.removeLast()
         }
         load(dirStack.lastOrNull() ?: "0", nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的 fid 链（不含根），左侧树据此把路径逐级展开并高亮。
+     * 树是自顶向下自己拼出 fid 链的（没有哪个网盘提供按 fid 反查祖先链的接口），
+     * 所以链只能由这里回填，不能反过来让树跳到一个陌生 fid。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /** 目录树状态：根为 fid "0"；点开哪个节点就按 fid 现拉它的子目录 */
+    val dirTree = DirTreeState(DirNode("0", "夸克网盘"), viewModelScope) { listSubDirs(it) }
+
+    /**
+     * 按 fid 列子目录（树懒加载）。列目录接口一页 50 条且**混排文件**，所以要翻页；
+     * 好在排序是 file_type:asc（目录恒排在最前），一旦某页里出现文件就说明已翻过目录区，可以早停。
+     */
+    suspend fun listSubDirs(dirFid: String): List<DirNode> {
+        val cookie = cookieProvider() ?: return emptyList()
+        val dirs = mutableListOf<DirNode>()
+        var page = 1
+        while (page <= TREE_DIR_MAX_PAGES) {
+            val batch = api.listCloudFiles(dirFid, cookie, page, TREE_DIR_PAGE_SIZE) ?: break
+            dirs += batch.filter { it.isdir }.map { DirNode(it.fid, it.fname) }
+            if (batch.size < TREE_DIR_PAGE_SIZE || batch.any { !it.isdir }) break
+            page++
+        }
+        return dirs
+    }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
+        load(pathIds.lastOrNull() ?: "0", pathNames)
     }
 
     // ---------- 文件操作 ----------
@@ -684,6 +724,7 @@ class QuarkCloudViewModel(
 
     /** 下拉刷新当前目录（不切 Loading 遮罩，完成后更新列表） */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current !is QuarkCloudUiState.Loaded) {
             loadRoot()
@@ -708,6 +749,8 @@ class QuarkCloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is QuarkCloudUiState.Loaded) {
             load(current.dirFid, current.pathNames)
@@ -743,3 +786,7 @@ class QuarkCloudViewModel(
             QuarkCloudViewModel(api, cookieProvider, downloadManager) as T
     }
 }
+
+/** 树懒加载子目录时的翻页尺寸与上限：上限只为兜住异常大的目录，正常几页内就靠「本页出现文件」早停 */
+private const val TREE_DIR_PAGE_SIZE = 50
+private const val TREE_DIR_MAX_PAGES = 20

@@ -17,6 +17,8 @@ import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -120,6 +122,37 @@ class XunleiCloudViewModel(
             nameStack.removeLast()
         }
         load(dirStack.lastOrNull() ?: "", nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的 id 链（不含根），左侧树据此把路径逐级展开并高亮。
+     * 树是自顶向下自己拼出 id 链的（迅雷没有按 id 反查祖先链的接口），所以链只能由这里回填。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /** 目录树状态：迅雷根目录 id 是空串，与浏览根目录时 Loaded.dirFid 的取值一致，根节点才会高亮 */
+    val dirTree = DirTreeState(DirNode("", "迅雷网盘"), viewModelScope) { listSubDirs(it) }
+
+    /**
+     * 按目录 id 列子目录（树懒加载）。
+     * 列目录接口内部写死 `page_token=&limit=50` 且丢弃 next_page_token，单个目录一次最多拿 50 条 ——
+     * 这是既有网络层行为，子目录多于 50 个时树上会缺项，要补齐得先给接口加翻页，不在这里绕过。
+     */
+    suspend fun listSubDirs(dirId: String): List<DirNode> {
+        val c = creds() ?: return emptyList()
+        val files = api.getFiles(dirId, c.first, c.second, c.third) ?: emptyList()
+        return files.filter { it.isdir }.map { DirNode(it.fid, it.fname) }
+    }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
+        load(pathIds.lastOrNull() ?: "", pathNames)
     }
 
     // ---------- 多选 ----------
@@ -603,6 +636,7 @@ class XunleiCloudViewModel(
 
     /** 下拉刷新 */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current !is XunleiCloudUiState.Loaded) {
             loadRoot()
@@ -627,6 +661,8 @@ class XunleiCloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is XunleiCloudUiState.Loaded) {
             load(current.dirFid, current.pathNames)

@@ -17,6 +17,8 @@ import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
 import com.yunx.app.data.repository.GuangYaAccountRepository
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -132,6 +134,33 @@ class GuangYaCloudViewModel(
             nameStack.removeLast()
         }
         load(dirStack.lastOrNull() ?: GuangYaConstants.ROOT_PARENT_ID, nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的 fileId 链（不含根），左侧树据此把路径逐级展开并高亮。
+     * 树只能自顶向下拼出这条链（没有网盘提供按 id 反查祖先链的接口），所以链由这里回填。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /** 目录树状态：光鸭根目录 id 是空串，树上点开的节点现拉子目录 */
+    val dirTree = DirTreeState(
+        DirNode(GuangYaConstants.ROOT_PARENT_ID, "光鸭云盘"),
+        viewModelScope
+    ) { listSubDirs(it) }
+
+    /** 列子目录（树懒加载）：[GuangYaApi.listCloudFiles] 内部已翻完所有页，一次调用即拿到整个目录 */
+    suspend fun listSubDirs(dirId: String): List<DirNode> =
+        api.listCloudFiles(token(), dirId).filter { it.isdir }.map { DirNode(it.fid, it.fname) }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
+        load(pathIds.lastOrNull() ?: GuangYaConstants.ROOT_PARENT_ID, pathNames)
     }
 
     // ---------- 多选 ----------
@@ -574,6 +603,7 @@ class GuangYaCloudViewModel(
 
     /** 下拉刷新 */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current !is GuangYaCloudUiState.Loaded) {
             loadRoot()
@@ -593,6 +623,8 @@ class GuangYaCloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移之后树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is GuangYaCloudUiState.Loaded) {
             load(current.dirId, current.pathNames)

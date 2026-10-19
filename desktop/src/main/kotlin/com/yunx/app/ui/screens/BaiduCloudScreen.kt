@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -32,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Refresh
@@ -73,6 +76,7 @@ import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
+import com.yunx.app.ui.components.DirTreePanel
 import com.yunx.app.ui.components.ScrollToTopButton
 import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.BackToParentItem
@@ -131,6 +135,12 @@ fun BaiduCloudScreen(
         } else {
             onProceed()
         }
+    }
+
+    // 列表切到哪个目录，左侧树就把那条路径逐级展开并滚到看得见
+    LaunchedEffect(state) {
+        val s = state
+        if (s is BaiduCloudUiState.Loaded) viewModel.dirTree.reveal(viewModel.currentPathFids)
     }
 
     LaunchedEffect(viewModel.cloudMessage) {
@@ -194,9 +204,29 @@ fun BaiduCloudScreen(
                 }
 
                 is BaiduCloudUiState.Loaded -> Box(modifier = Modifier.fillMaxSize()) {
+                    // 左树右列表：树只管「跳到哪个目录」，列表仍是该目录的内容，两者共用 VM
+                    // 覆盖层（回到顶部/批量栏）留在外层 Box 里：这版 Compose 只有 RowScope/ColumnScope 的
+                    // AnimatedVisibility，被 Row 包着会让它去取无法跨 composable lambda 捕获的 RowScope 接收者。
+                    Row(modifier = Modifier.fillMaxSize()) {
+                    if (viewModel.dirTree.paneVisible) {
+                        DirTreePanel(
+                            state = viewModel.dirTree,
+                            selectedId = s.dirPath,
+                            rootTitle = "百度网盘",
+                            onSelect = { row -> viewModel.openPath(row.pathIds, row.pathNames) },
+                            modifier = Modifier.width(232.dp).fillMaxHeight()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(1.dp)
+                                .background(MaterialTheme.colorScheme.outlineVariant)
+                        )
+                    }
                     LazyColumn(
                             state = listState,
                             modifier = Modifier
+                                .weight(1f)
                                 .fillMaxSize()
                                 .nestedScroll(scrollBehavior.nestedScrollConnection),
                             contentPadding = PaddingValues(
@@ -243,6 +273,17 @@ fun BaiduCloudScreen(
                                                     text = "共 ${s.files.size} 项",
                                                     style = MaterialTheme.typography.bodyMedium,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            // 目录树栏开关：窗口窄的时候收起来，把宽度让给文件列表
+                                            IconButton(onClick = { viewModel.dirTree.togglePane() }) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Layers,
+                                                    contentDescription = if (viewModel.dirTree.paneVisible) "隐藏目录树" else "显示目录树",
+                                                    tint = if (viewModel.dirTree.paneVisible)
+                                                        MaterialTheme.colorScheme.primary
+                                                    else
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
                                             }
                                             // 新建文件夹入口（窗口内覆盖层输入）
@@ -342,6 +383,7 @@ fun BaiduCloudScreen(
                                 )
                             }
                         }
+                    }
 
                     // 返回顶部按钮（上滑离开顶部后显示；多选模式下上移避开底部批量栏）
                     ScrollToTopButton(

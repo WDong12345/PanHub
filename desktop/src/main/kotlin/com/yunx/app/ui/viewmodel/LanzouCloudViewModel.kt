@@ -17,6 +17,8 @@ import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
 import com.yunx.app.data.repository.LanzouAccountRepository
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -155,6 +157,40 @@ class LanzouCloudViewModel(
             nameStack.removeLast()
         }
         load(dirStack.lastOrNull() ?: LanzouConstants.ROOT_FOLDER_ID, nameStack.toList())
+    }
+
+    // ---------- 左侧目录树 ----------
+
+    /**
+     * 当前浏览目录的 folder_id 链（不含根），左侧树据此把路径逐级展开并高亮。
+     * 树是自顶向下自己拼出 id 链的（蓝奏没有按 folder_id 反查祖先链的接口），
+     * 所以链只能由这里回填，不能反过来让树跳到一个陌生目录。
+     */
+    val currentPathFids: List<String> get() = dirStack.toList()
+
+    /**
+     * 目录树状态。节点 id 用纯 folder_id（不带 d: 前缀）：dirStack 与 Loaded.dirId 存的就是纯数字，
+     * 前缀只是 ShareFile 模型的表示法，两边形态不一致会导致高亮、跳转、reveal 全落空。
+     */
+    val dirTree = DirTreeState(
+        DirNode(LanzouConstants.ROOT_FOLDER_ID, "蓝奏云"),
+        viewModelScope
+    ) { listSubDirs(it) }
+
+    /** 按 folder_id 列子目录（树懒加载）；id 同样还原成纯数字回给树 */
+    suspend fun listSubDirs(dirId: String): List<DirNode> {
+        val cred = creds()
+        return api.listFolders(cred.cookie, cred.uid, cred.vei, dirId)
+            .map { DirNode(folderNumeric(it.fid), it.fname) }
+    }
+
+    /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
+    fun openPath(pathIds: List<String>, pathNames: List<String>) {
+        dirStack.clear()
+        nameStack.clear()
+        pathIds.forEach { dirStack.addLast(it) }
+        pathNames.forEach { nameStack.addLast(it) }
+        load(pathIds.lastOrNull() ?: LanzouConstants.ROOT_FOLDER_ID, pathNames)
     }
 
     // ---------- 多选 ----------
@@ -624,6 +660,7 @@ class LanzouCloudViewModel(
 
     /** 下拉刷新 */
     fun refresh() {
+        dirTree.invalidate()
         val current = uiState.value
         if (current !is LanzouCloudUiState.Loaded) {
             loadRoot()
@@ -644,6 +681,8 @@ class LanzouCloudViewModel(
     }
 
     private fun reloadCurrent() {
+        // 增删改移后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
+        dirTree.invalidate()
         val current = uiState.value
         if (current is LanzouCloudUiState.Loaded) {
             load(current.dirId, current.pathNames)
