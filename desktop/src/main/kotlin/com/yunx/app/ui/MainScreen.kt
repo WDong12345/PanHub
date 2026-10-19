@@ -81,6 +81,7 @@ import com.yunx.app.data.network.LanzouApi
 import com.yunx.app.data.network.Pan115Api
 import com.yunx.app.data.network.Pan123Api
 import com.yunx.app.data.network.QuarkApi
+import com.yunx.app.data.network.QuarkConstants
 import com.yunx.app.data.network.TokenCheck
 import com.yunx.app.data.network.UCApi
 import com.yunx.app.data.network.XunleiApi
@@ -169,6 +170,7 @@ import com.yunx.app.ui.viewmodel.UCAccountViewModel
 import com.yunx.app.ui.viewmodel.UCCoudViewModel
 import com.yunx.app.ui.viewmodel.XunleiAccountViewModel
 import com.yunx.app.ui.viewmodel.XunleiCloudViewModel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
@@ -264,6 +266,8 @@ fun MainScreen(
     val repository = remember {
         QuarkAccountRepository(db.quarkAccountDao(), api)
     }
+    // 夸克分享仓库：解析页取链用，启动清理遗留临时转存也用它（同一个实例）
+    val quarkResolveRepository = remember { QuarkResolveRepository(api) }
     val ucRepository = remember {
         UCAccountRepository(db.ucAccountDao(), ucApi)
     }
@@ -541,7 +545,7 @@ fun MainScreen(
     val resolveViewModel: ResolveViewModel = viewModel(
         factory = ResolveViewModel.Factory(
             repository,
-            QuarkResolveRepository(api),
+            quarkResolveRepository,
             ucRepository,
             UCResolveRepository(ucApi),
             xunleiRepository,
@@ -684,6 +688,24 @@ fun MainScreen(
 
     // 启动时同步一次「Gopeed 内核是否已导入」（进程内状态与磁盘事实对齐，供引擎页与分流判断使用）
     LaunchedEffect(Unit) { GopeedEngine.syncInstalledState() }
+
+    /**
+     * 启动时清理夸克遗留的临时转存目录（tr_*）。
+     * 正常路径下这些目录由「下载完成」回调删除，但回调是内存闭包，进程被杀 / 重启后续跑的
+     * 任务没有回调，目录就一直留在用户网盘里 —— 看起来就像「下载必须得先转存」。
+     * 仍在下载 / 暂停 / 失败待重下的任务引用着的目录（cleanupId）不能碰，删了正在下的直链会 404。
+     */
+    LaunchedEffect(Unit) {
+        val cookie = repository.getAccount()?.cookie.orEmpty()
+        if (!QuarkConstants.isValidCookie(cookie)) return@LaunchedEffect
+        val keepFids = runCatching { downloadManager.tasks.first() }
+            .getOrDefault(emptyList())
+            .filter { it.status != DownloadTaskEntity.STATUS_COMPLETED && it.cleanupId.isNotBlank() }
+            .map { it.cleanupId }
+            .toSet()
+        val swept = runCatching { quarkResolveRepository.sweepLeftoverTempDirs(cookie, keepFids) }.getOrDefault(0)
+        if (swept > 0) SnackbarController.show("已清理夸克网盘遗留的临时转存目录 $swept 个")
+    }
 
     /**
      * 启动自动检查更新（整个会话只跑一次）。

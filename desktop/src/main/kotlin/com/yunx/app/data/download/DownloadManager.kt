@@ -617,6 +617,12 @@ class DownloadManager(
         shareUrl: String = "",
         /** 镜像主 URL 不可达时的回退直连（默认空=不回退）；仅 GitHub 等镜像下载传入 */
         fallbackUrl: String = "",
+        /**
+         * 云端临时目录 ID（夸克「转存取链」建的 tr_* 子目录）。落库的意义在重启之后：
+         * [onComplete] 回调是内存态，进程一没就丢了，清理只能靠启动扫描 —— 扫描要知道哪些目录
+         * 还被未完成的任务占着，读的就是这一列（download_task.cleanupId）。
+         */
+        cleanupId: String = "",
         /** 下载成功完成后的清理回调（如删除网盘临时转存文件）；失败/取消不触发。
          * 注意：必须是最后一个参数（调用点有大量尾随 lambda 用法，放它之后会编译失败）。 */
         onComplete: suspend () -> Unit = {}
@@ -644,7 +650,8 @@ class DownloadManager(
                         fileName = safeName,
                         requestHeadersJson = encodeHeaders(headers),
                         platform = taskPlatform,
-                        shareUrl = effectiveShareUrl
+                        shareUrl = effectiveShareUrl,
+                        cleanupId = cleanupId
                     )
                 )
             }
@@ -727,7 +734,7 @@ class DownloadManager(
             val valid = runCatching { downloader.getTotalSize(task.url, headers) != null }.getOrDefault(false)
             if (!valid) return false
         }
-        enqueue(task.url, task.fileName, headers, task.totalSize, task.platform)
+        enqueue(task.url, task.fileName, headers, task.totalSize, task.platform, cleanupId = task.cleanupId)
         return true
     }
 

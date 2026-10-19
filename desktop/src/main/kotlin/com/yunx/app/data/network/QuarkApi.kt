@@ -560,10 +560,14 @@ class QuarkApi(
     /** 6.2 删除文件（取链成功后清理临时转存；对齐抓包：action_type=2 + filelist + exclude_fids）
      *  返回异步 task_id（删除为异步任务，无需轮询；失败返回 null）。
      */
-    suspend fun deleteFile(fid: String, cookie: String): String? = withContext(Dispatchers.IO) {
+    suspend fun deleteFile(fid: String, cookie: String): String? = deleteFiles(listOf(fid), cookie)
+
+    /** 6.2 批量删除：filelist 原生支持多个 fid，一次请求删完（启动清理遗留 tr_* 目录用） */
+    suspend fun deleteFiles(fids: List<String>, cookie: String): String? = withContext(Dispatchers.IO) {
+        if (fids.isEmpty()) return@withContext null
         val body = JSONObject()
             .put("action_type", 2)
-            .put("filelist", JSONArray().put(fid))
+            .put("filelist", JSONArray().apply { fids.forEach { put(it) } })
             .put("exclude_fids", JSONArray())
             .toString()
         val request = postJson(QuarkConstants.DELETE_URL, cookie, body)

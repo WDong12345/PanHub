@@ -620,6 +620,12 @@ class ResolveViewModel(
     }
 
     private var session: ShareSession? = null
+    /**
+     * 本次分享是否已被服务端拒绝免转存。夸克个别分享类型必须「先转存再取链」，
+     * 首次失败即闩住，后续不再逐文件重试 —— 否则批量下载一个文件夹要为一百个文件
+     * 各打一次必败的取链请求。与 [session] 同生命周期，解析新分享时复位。
+     */
+    private var noSaveRejectedForSession = false
     private var currentDirFid = QuarkConstants.DEFAULT_PDIR_FID
     private val dirStack = ArrayDeque<String>()
 
@@ -755,6 +761,8 @@ class ResolveViewModel(
             repo.createSession(effectiveLink, pwd, credential)
                 .onSuccess { s ->
                     session = s
+                    // 新分享重新给免转存一次机会（上一份分享被拒不代表这份也被拒）
+                    noSaveRejectedForSession = false
                     currentDirFid = currentDefaultDirFid()
                     dirStack.clear()
                     pathNames = emptyList()
@@ -1567,7 +1575,9 @@ class ResolveViewModel(
      *
      * 两条退路：
      * - 用户在设置里关掉「免转存下载」（[noSaveDownloadProvider]）⇒ 直接走原来的转存流程；
-     * - 开着免转存但夸克个别分享类型服务端仍要求「先转存再取链」⇒ 失败后自动回退转存。
+     * - 开着免转存但夸克个别分享类型服务端仍要求「先转存再取链」⇒ 失败后自动回退转存，
+     *   并闩住本次分享（[noSaveRejectedForSession]）不再逐文件重试。
+     * 回退必须是看得见的：不然网盘里凭空多出「YunX临时转存」，用户只会理解成「下载就得先转存」。
      * 其余平台的默认实现就是原有取链，不存在第二条链路，不重复请求。
      */
     private suspend fun resolveShareLink(
@@ -1578,8 +1588,14 @@ class ResolveViewModel(
         skipSpaceCheck: Boolean = false
     ): Result<DownloadLink> {
         if (!noSaveDownloadProvider()) return repo.getShareDownloadLink(session, file, credential, skipSpaceCheck)
+        // 已被服务端拒过：直接转存取链（该标记只在夸克分支置位，解析新分享时复位）
+        if (noSaveRejectedForSession) return repo.getShareDownloadLink(session, file, credential, skipSpaceCheck)
         val noSave = repo.getShareDownloadLinkWithoutSave(session, file, credential)
         if (noSave.isSuccess || currentPlatform != SharePlatform.QUARK) return noSave
+        val reason = noSave.exceptionOrNull()?.message ?: "服务端未返回直链"
+        Log.w("ResolveVM", "夸克免转存取链失败，回退转存: $reason")
+        noSaveRejectedForSession = true
+        SnackbarController.show("免转存取链被拒：$reason；已改为转存后取链，下载完成会清理")
         return repo.getShareDownloadLink(session, file, credential, skipSpaceCheck)
     }
 
@@ -1792,7 +1808,8 @@ class ResolveViewModel(
             fileName = fileName,
             headers = headers,
             size = link.size,
-            platform = platform
+            platform = platform,
+            cleanupId = link.cleanupDirFid.orEmpty()
         ) {
             // 下载完成（通过 onComplete 回调）：清理网盘临时转存目录；失败/取消不触发
             val dirFid = link.cleanupDirFid
