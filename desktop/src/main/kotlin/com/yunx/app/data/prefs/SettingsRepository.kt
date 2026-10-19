@@ -88,14 +88,23 @@ class SettingsRepository {
             prefs.putBoolean("quark_no_save_download", value)
         }
 
+    /**
+     * 下载时同时保存到网盘（默认关闭，仅夸克）。
+     * 夸克免转存路径本身不写网盘，勾选后改为「转存到网盘 → 用新 fid 继续下载」，
+     * 一次转存既保存又下载，不会转存两次；其它平台不支持装存后直接续下，不显示该选项。
+     */
+    var saveToCloudOnDownload: Boolean
+        get() = prefs.getBoolean("save_to_cloud_on_download", false)
+        set(value) {
+            prefs.putBoolean("save_to_cloud_on_download", value)
+        }
+
     /** 后台剪贴板分享链接检测（主窗口失焦时轮询剪贴板，检测到网盘链接弹出提示） */
     var clipboardLinkDetection: Boolean
         get() = prefs.getBoolean("clipboard_link_detection", true)
         set(value) {
             prefs.putBoolean("clipboard_link_detection", value)
         }
-
-    /** 接受预发布版更新：检查更新时把 GitHub Pre-release 也算作新版本（默认关闭） */
     var acceptPrereleaseUpdate: Boolean
         get() = prefs.getBoolean("accept_prerelease_update", false)
         set(value) {

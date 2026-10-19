@@ -571,7 +571,9 @@ fun MainScreen(
             // GitHub 镜像前缀：用户自定义优先，未配置时用内置默认镜像
             { settings.githubMirrorPrefix?.ifBlank { null } ?: UpdateChecker.MIRROR_PREFIX },
             // 取链方式开关：设置页「免转存下载」实时生效
-            { settings.quarkNoSaveDownload }
+            { settings.quarkNoSaveDownload },
+            // 下载时同时保存到网盘：设置页默认值，解析页可临时覆盖
+            { settings.saveToCloudOnDownload }
         )
     )
     val downloadViewModel: DownloadViewModel = viewModel(
@@ -598,20 +600,6 @@ fun MainScreen(
         if (resolveViewModel.downloadStarted) {
             currentTab = MainTab.Download
             resolveViewModel.consumeDownloadStarted()
-        }
-    }
-
-    // 解析页夸克转存成功后自动进入「夸克网盘」对应目录：转存本是下载的前置动作，
-    // 完事还把人留在解析页，等于让用户自己找回刚存的那个目录
-    var openQuarkCloud by remember { mutableStateOf(false) }
-    LaunchedEffect(resolveViewModel.savedToCloudTriggered) {
-        if (resolveViewModel.savedToCloudTriggered > 0) {
-            resolveViewModel.consumeSavedToCloud()
-            // 转存弹窗与网盘页共用同一个 QuarkCloudViewModel，浏览栈就停在转存目标目录；
-            // 但列表是转存前加载的，刷新一次新文件才会出现
-            quarkCloudViewModel.refresh()
-            openQuarkCloud = true
-            currentTab = MainTab.Drive
         }
     }
 
@@ -875,8 +863,6 @@ fun MainScreen(
                             ilanzouAccount = ilanzouAccount,
                             lanzouAccount = lanzouAccount,
                             quarkCloudViewModel = quarkCloudViewModel,
-                            openQuarkCloud = openQuarkCloud,
-                            onOpenQuarkCloudConsumed = { openQuarkCloud = false },
                             ucCloudViewModel = ucCloudViewModel,
                             xunleiCloudViewModel = xunleiCloudViewModel,
                             baiduCloudViewModel = baiduCloudViewModel,

@@ -12,7 +12,6 @@ import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.GuangYaApi
 import com.yunx.app.data.network.GuangYaConstants
-import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
@@ -73,10 +72,6 @@ class GuangYaCloudViewModel(
         private set
     private val _selected = mutableStateListOf<ShareFile>()
     val selected: List<ShareFile> get() = _selected
-
-    var downloadLink by mutableStateOf<DownloadLink?>(null)
-        private set
-    private var pendingDownload: PendingDownload? = null
 
     private val dirStack = ArrayDeque<String>()
     private val nameStack = ArrayDeque<String>()
@@ -329,7 +324,7 @@ class GuangYaCloudViewModel(
         }
     }
 
-    /** 下载文件：取直链 → 弹下载确认弹窗（确认后入队） */
+    /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
     fun downloadFile() {
         val file = actionFile ?: return
         viewModelScope.launch {
@@ -337,37 +332,15 @@ class GuangYaCloudViewModel(
             try {
                 val link = api.getDownloadLink(token(), file)
                     ?: throw IllegalStateException("获取下载链接失败")
-                pendingDownload = PendingDownload(
+                val fileName = file.fname.ifBlank { link.filename }
+                downloadManager.enqueue(
                     url = link.downloadUrl,
-                    fileName = file.fname.ifBlank { link.filename },
+                    fileName = fileName,
                     size = link.size,
+                    platform = DownloadPlatform.GUANGYA,
                     headers = downloadHeaders()
                 )
-                downloadLink = link
-            } catch (e: Exception) {
-                cloudMessage = e.message ?: "下载失败"
-            } finally {
-                isOperating = false
-            }
-        }
-    }
-
-    /** 下载弹窗确认：用已生成的直链入队 */
-    fun startDownload() {
-        val pd = pendingDownload ?: return
-        downloadLink = null
-        pendingDownload = null
-        viewModelScope.launch {
-            isOperating = true
-            try {
-                downloadManager.enqueue(
-                    url = pd.url,
-                    fileName = pd.fileName,
-                    size = pd.size,
-                    platform = DownloadPlatform.GUANGYA,
-                    headers = pd.headers
-                )
-                cloudMessage = "已加入下载：${pd.fileName}"
+                cloudMessage = "已加入下载：$fileName"
                 actionFile = null
                 downloadTriggered++
             } catch (e: Exception) {
@@ -376,12 +349,6 @@ class GuangYaCloudViewModel(
                 isOperating = false
             }
         }
-    }
-
-    /** 关闭下载弹窗（放弃下载） */
-    fun dismissDownloadDialog() {
-        downloadLink = null
-        pendingDownload = null
     }
 
     /** 重命名 */

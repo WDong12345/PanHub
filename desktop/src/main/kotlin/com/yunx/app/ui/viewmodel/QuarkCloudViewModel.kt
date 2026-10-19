@@ -12,7 +12,6 @@ import kotlin.reflect.KClass
 import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.QuarkApi
-import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
 import com.yunx.app.ui.components.DirNode
@@ -358,14 +357,7 @@ class QuarkCloudViewModel(
         }
     }
 
-    /** 待确认的下载直链（单文件下载弹窗展示用，长按链接可复制） */
-    var downloadLink by mutableStateOf<DownloadLink?>(null)
-        private set
-
-    /** 与 downloadLink 配套的入队参数（弹窗确认后直接入队） */
-    private var pendingDownload: PendingDownload? = null
-
-    /** 下载文件：取直链 → 弹出下载确认弹窗（对齐解析页行为，确认后入队） */
+    /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
     fun downloadFile() {
         val file = actionFile ?: return
         viewModelScope.launch {
@@ -380,41 +372,19 @@ class QuarkCloudViewModel(
                     ?: throw IllegalStateException("获取下载链接失败")
                 // 直链原样使用（关闭 CDN 节点改写/探测，避免消耗直链额度与节点签名 412）
                 val effectiveUrl = com.yunx.app.data.network.QuarkCdn.fastest(link.downloadUrl, cookie)
-                pendingDownload = PendingDownload(
+                val fileName = link.filename.ifBlank { file.fname }
+                downloadManager.enqueue(
                     url = effectiveUrl,
-                    fileName = link.filename.ifBlank { file.fname },
+                    fileName = fileName,
                     size = link.size,
+                    platform = DownloadPlatform.QUARK,
                     headers = mapOf(
                         "Cookie" to cookie,
                         "User-Agent" to com.yunx.app.data.network.QuarkConstants.API_USER_AGENT,
                         "Referer" to com.yunx.app.data.network.QuarkConstants.DOWNLOAD_REFERER
                     )
                 )
-                downloadLink = link // 弹下载确认弹窗（长按直链可复制）
-            } catch (e: Exception) {
-                cloudMessage = e.message ?: "下载失败"
-            } finally {
-                isOperating = false
-            }
-        }
-    }
-
-    /** 下载弹窗确认：用已生成的直链入队 */
-    fun startDownload() {
-        val pd = pendingDownload ?: return
-        downloadLink = null
-        pendingDownload = null
-        viewModelScope.launch {
-            isOperating = true
-            try {
-                downloadManager.enqueue(
-                    url = pd.url,
-                    fileName = pd.fileName,
-                    size = pd.size,
-                    platform = DownloadPlatform.QUARK,
-                    headers = pd.headers
-                )
-                cloudMessage = "已加入下载：${pd.fileName}"
+                cloudMessage = "已加入下载：$fileName"
                 actionFile = null
                 downloadTriggered++
             } catch (e: Exception) {
@@ -423,12 +393,6 @@ class QuarkCloudViewModel(
                 isOperating = false
             }
         }
-    }
-
-    /** 关闭下载弹窗（放弃下载） */
-    fun dismissDownloadDialog() {
-        downloadLink = null
-        pendingDownload = null
     }
 
     /** 重命名 */

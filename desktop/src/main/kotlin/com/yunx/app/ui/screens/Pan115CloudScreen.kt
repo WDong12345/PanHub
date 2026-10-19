@@ -77,7 +77,6 @@ import com.yunx.app.ui.components.FadeAlertDialog
 import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
 import com.yunx.app.ui.components.ScrollToTopButton
-import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.BackToParentItem
 import com.yunx.app.ui.resolve.CrumbBar
 import com.yunx.app.ui.resolve.FileRowAction
@@ -145,14 +144,6 @@ fun Pan115CloudScreen(
             viewModel.consumeDownloadTriggered()
             onDownloadStarted()
         }
-    }
-
-    viewModel.downloadLink?.let { link ->
-        DownloadLinkDialog(
-            link = link,
-            onDownload = { viewModel.startDownload() },
-            onDismiss = { viewModel.dismissDownloadDialog() }
-        )
     }
 
     Surface(

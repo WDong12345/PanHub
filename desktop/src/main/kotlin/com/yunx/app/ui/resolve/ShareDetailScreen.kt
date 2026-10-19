@@ -249,6 +249,30 @@ fun ShareDetailScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         GuestBrowseNotice(viewModel.sharePlatform)
                     }
+                    // 下载时同时保存到网盘（仅夸克：只有它能用转存返回的新 fid 继续下载；
+                    // 其余平台的「保存」仍走行尾转存按钮，避免勾了却只存不下）
+                    if (!viewModel.multiSelectMode && viewModel.sharePlatform == SharePlatform.QUARK && !viewModel.isGuest) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.setSaveOnDownload(!viewModel.saveOnDownload) }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = viewModel.saveOnDownload,
+                                onCheckedChange = { viewModel.setSaveOnDownload(it) },
+                                modifier = Modifier.size(32.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "下载时同时保存到网盘",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
 

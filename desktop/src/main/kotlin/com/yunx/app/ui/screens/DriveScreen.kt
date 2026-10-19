@@ -112,9 +112,6 @@ fun DriveScreen(
     lanzouAccount: LanzouAccountEntity?,
     /** 夸克云盘浏览 ViewModel（网盘 Tab 内切换展示，非全屏） */
     quarkCloudViewModel: QuarkCloudViewModel,
-    /** 为 true 时直接进入夸克云盘列表，消费后由上层复位（解析页转存成功后送到刚存的目录） */
-    openQuarkCloud: Boolean = false,
-    onOpenQuarkCloudConsumed: () -> Unit = {},
     /** UC 网盘云盘浏览 ViewModel */
     ucCloudViewModel: UCCoudViewModel,
     /** 迅雷网盘云盘浏览 ViewModel */
@@ -183,13 +180,6 @@ fun DriveScreen(
     var showGitHubSheet by remember { mutableStateOf(false) }
     // 夸克云盘浏览：网盘 Tab 内切换（非全屏），切 Tab 再回来仍保留
     var showCloud by rememberSaveable { mutableStateOf(false) }
-    // 解析页转存成功 → 直接进入夸克云盘列表；消费后置回，避免下次进网盘页又被拽进去
-    LaunchedEffect(openQuarkCloud) {
-        if (openQuarkCloud) {
-            showCloud = true
-            onOpenQuarkCloudConsumed()
-        }
-    }
     // UC 网盘云盘浏览：网盘 Tab 内切换（非全屏）
     var showUCCloud by rememberSaveable { mutableStateOf(false) }
     // 迅雷网盘云盘浏览：网盘 Tab 内切换（非全屏）

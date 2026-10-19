@@ -14,7 +14,6 @@ import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.C139Api
 import com.yunx.app.data.network.C139Constants
 import com.yunx.app.data.network.model.ShareFile
-import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareInfo
 import com.yunx.app.ui.components.DirNode
 import com.yunx.app.ui.components.DirTreeState
@@ -319,15 +318,8 @@ class C139CloudViewModel(
         }
     }
 
-    /** 下载：getDownloadUrl 取 OBS 直链（900s 有效，UA + Referer 即可）→ 内置下载队列 */
-    /** 待确认的下载直链（单文件下载弹窗展示用，长按链接可复制） */
-    var downloadLink by mutableStateOf<DownloadLink?>(null)
-        private set
-
-    /** 与 downloadLink 配套的入队参数（弹窗确认后直接入队） */
-    private var pendingDownload: PendingDownload? = null
-
-    /** 下载文件：取直链 → 弹出下载确认弹窗（对齐解析页行为，确认后入队） */
+    /** 下载文件：getDownloadUrl 取 OBS 直链（900s 有效，UA + Referer 即可）后直接入队并切到下载页；
+     *  直链仍可在下载页右键复制 */
     fun downloadFile() {
         val file = actionFile ?: return
         viewModelScope.launch {
@@ -335,41 +327,16 @@ class C139CloudViewModel(
             try {
                 val link = api.getDownloadUrl(file.fid, cookie())
                     ?: throw IllegalStateException("获取下载链接失败")
-                pendingDownload = PendingDownload(
-                    url = link.downloadUrl,
-                    // 139 getDownloadUrl 响应不含 name → 用列表里的文件名（与分享链接下载一致，避免 fileId 乱码）
-                    fileName = file.fname.ifBlank { link.filename },
-                    size = link.size,
-                    headers = mapOf(
-                        "User-Agent" to C139Constants.PC_UA,
-                        "Referer" to "https://yun.139.com/"
-                    )
-                )
-                downloadLink = link // 弹下载确认弹窗（长按直链可复制）
-            } catch (e: Exception) {
-                cloudMessage = e.message ?: "下载失败"
-            } finally {
-                isOperating = false
-            }
-        }
-    }
-
-    /** 下载弹窗确认：用已生成的直链入队 */
-    fun startDownload() {
-        val pd = pendingDownload ?: return
-        downloadLink = null
-        pendingDownload = null
-        viewModelScope.launch {
-            isOperating = true
-            try {
+                // 139 getDownloadUrl 响应不含 name → 用列表里的文件名（与分享链接下载一致，避免 fileId 乱码）
+                val fileName = file.fname.ifBlank { link.filename }
                 downloadManager.enqueue(
-                    url = pd.url,
-                    fileName = pd.fileName,
-                    size = pd.size,
+                    url = link.downloadUrl,
+                    fileName = fileName,
+                    size = link.size,
                     platform = DownloadPlatform.C139,
-                    headers = pd.headers
+                    headers = downloadHeaders()
                 )
-                cloudMessage = "已加入下载：${pd.fileName}"
+                cloudMessage = "已加入下载：$fileName"
                 actionFile = null
                 downloadTriggered++
             } catch (e: Exception) {
@@ -378,12 +345,6 @@ class C139CloudViewModel(
                 isOperating = false
             }
         }
-    }
-
-    /** 关闭下载弹窗（放弃下载） */
-    fun dismissDownloadDialog() {
-        downloadLink = null
-        pendingDownload = null
     }
 
     /** 重命名 */

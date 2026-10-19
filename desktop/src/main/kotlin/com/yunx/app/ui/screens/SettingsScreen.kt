@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Power
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Restore
+import androidx.compose.material.icons.outlined.SaveAlt
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.SwapHoriz
@@ -163,6 +164,8 @@ fun SettingsScreen(
     var retryCount by remember { mutableStateOf(settingsRepo.downloadRetryCount) }
     // 夸克取链方式：免转存（默认，不写入网盘）↔ 转存（先存临时目录再取链）
     var quarkNoSave by remember { mutableStateOf(settingsRepo.quarkNoSaveDownload) }
+    // 下载时同时保存到网盘（解析页勾选框的默认值）
+    var saveOnDownload by remember { mutableStateOf(settingsRepo.saveToCloudOnDownload) }
     var showConcurrencyDialog by remember { mutableStateOf(false) }
     var showSpeedDialog by remember { mutableStateOf(false) }
     var showRetryDialog by remember { mutableStateOf(false) }
@@ -259,6 +262,25 @@ fun SettingsScreen(
                 settingsRepo.quarkNoSaveDownload = quarkNoSave
             },
             trailing = { Switch(checked = quarkNoSave, onCheckedChange = null) }
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // 解析页「下载时同时保存到网盘」勾选框的默认值。
+        // 仅夸克：转存会用同一个新 fid 继续下载，一次转存既保存又下载；其它平台不显示该选项。
+        SettingsItem(
+            icon = Icons.Outlined.SaveAlt,
+            title = "下载时同时保存到网盘（夸克）",
+            description = if (saveOnDownload) {
+                "夸克分享默认勾选「同时保存」，下载前先存到网盘再继续"
+            } else {
+                "夸克分享默认不勾选；可随时在分享列表上方临时勾选"
+            },
+            onClick = {
+                saveOnDownload = !saveOnDownload
+                settingsRepo.saveToCloudOnDownload = saveOnDownload
+            },
+            trailing = { Switch(checked = saveOnDownload, onCheckedChange = null) }
         )
 
         Spacer(modifier = Modifier.height(8.dp))

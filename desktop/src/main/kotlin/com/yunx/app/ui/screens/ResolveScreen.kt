@@ -75,7 +75,6 @@ import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.ui.components.GitHubMarkdownImageTransformer
-import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.LinkHistoryDialog
 import com.yunx.app.ui.resolve.ShareDetailScreen
 import com.yunx.app.ui.theme.compactMarkdownTypography
@@ -124,7 +123,6 @@ fun ResolveScreen(
     modifier: Modifier = Modifier
 ) {
     val state = viewModel.uiState
-    val downloadLink = viewModel.downloadLink
     val downloadError = viewModel.downloadError
 
     // 输入框状态提升到页面层：进入详情/文件夹再返回时不清空
@@ -411,15 +409,6 @@ fun ResolveScreen(
                     )
                 }
             }
-        )
-    }
-
-    // 下载直链弹窗
-    downloadLink?.let { link ->
-        DownloadLinkDialog(
-            link = link,
-            onDownload = { viewModel.startDownload(link) },
-            onDismiss = { viewModel.dismissDownloadDialog() }
         )
     }
 

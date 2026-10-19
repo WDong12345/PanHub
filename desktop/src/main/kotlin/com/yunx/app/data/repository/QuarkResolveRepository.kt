@@ -47,6 +47,19 @@ class QuarkResolveRepository(private val api: QuarkApi) : ShareResolveRepository
             onFailure = { Result.failure(it) }
         )
 
+    /** 列个人网盘目录（转存后原地续下文件夹用）；分页与网盘页一致，目录在前可早停 */
+    suspend fun listPersonalFiles(dirFid: String, cookie: String): List<ShareFile> {
+        val all = mutableListOf<ShareFile>()
+        var page = 1
+        while (page <= 20) {
+            val batch = api.listCloudFiles(dirFid, cookie, page, 100) ?: break
+            all += batch
+            if (batch.size < 100) break
+            page++
+        }
+        return all
+    }
+
     /**
      * 确保「YunX临时转存」目录存在，返回其 fid；不存在则创建。
      */

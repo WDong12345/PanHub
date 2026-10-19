@@ -13,7 +13,6 @@ import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.LanzouApi
 import com.yunx.app.data.network.LanzouConstants
-import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
 import com.yunx.app.data.repository.LanzouAccountRepository
@@ -77,10 +76,6 @@ class LanzouCloudViewModel(
         private set
     private val _selected = mutableStateListOf<ShareFile>()
     val selected: List<ShareFile> get() = _selected
-
-    var downloadLink by mutableStateOf<DownloadLink?>(null)
-        private set
-    private var pendingDownload: PendingDownload? = null
 
     private val dirStack = ArrayDeque<String>()
     private val nameStack = ArrayDeque<String>()
@@ -354,7 +349,7 @@ class LanzouCloudViewModel(
         }
     }
 
-    /** 下载文件：取直链 → 弹下载确认弹窗（确认后入队） */
+    /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
     fun downloadFile() {
         val file = actionFile ?: return
         viewModelScope.launch {
@@ -362,37 +357,15 @@ class LanzouCloudViewModel(
             try {
                 val cred = creds()
                 val link = api.getPersonalDownloadLink(cred.cookie, cred.uid, cred.vei, fileNumeric(file.fid), file.fname)
-                pendingDownload = PendingDownload(
+                val fileName = file.fname.ifBlank { link.filename }
+                downloadManager.enqueue(
                     url = link.downloadUrl,
-                    fileName = file.fname.ifBlank { link.filename },
+                    fileName = fileName,
                     size = link.size,
+                    platform = DownloadPlatform.LANZOU,
                     headers = downloadHeaders(link.downloadUrl)
                 )
-                downloadLink = link
-            } catch (e: Exception) {
-                cloudMessage = e.message ?: "下载失败"
-            } finally {
-                isOperating = false
-            }
-        }
-    }
-
-    /** 下载弹窗确认：用已生成的直链入队 */
-    fun startDownload() {
-        val pd = pendingDownload ?: return
-        downloadLink = null
-        pendingDownload = null
-        viewModelScope.launch {
-            isOperating = true
-            try {
-                downloadManager.enqueue(
-                    url = pd.url,
-                    fileName = pd.fileName,
-                    size = pd.size,
-                    platform = DownloadPlatform.LANZOU,
-                    headers = pd.headers
-                )
-                cloudMessage = "已加入下载：${pd.fileName}"
+                cloudMessage = "已加入下载：$fileName"
                 actionFile = null
                 downloadTriggered++
             } catch (e: Exception) {
@@ -401,11 +374,6 @@ class LanzouCloudViewModel(
                 isOperating = false
             }
         }
-    }
-
-    fun dismissDownloadDialog() {
-        downloadLink = null
-        pendingDownload = null
     }
 
     // ---------- 单文件操作 ----------
