@@ -72,8 +72,8 @@ import com.yunx.app.ui.resolve.ShareFileRow
 import com.yunx.app.ui.viewmodel.QuarkCloudUiState
 import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
 
-/** 文件操作菜单类型（FileActionSheet 内切换） */
-private enum class ActionStep { MENU, MOVE, SHARE, RENAME, DELETE }
+/** 文件操作菜单类型（FileActionSheet 内切换）；对文件行内联按钮开放，用于直达指定步骤 */
+internal enum class ActionStep { MENU, MOVE, SHARE, RENAME, DELETE }
 
 /** 有效期选项：名称 + UI 中性码（[ShareExpire]；各平台 API 取值不同，由 ViewModel 负责转换） */
 private val expireOptions = listOf(
@@ -86,15 +86,17 @@ private val expireOptions = listOf(
 /**
  * 夸克云盘文件操作弹窗：更多按钮 → 操作菜单（下载/分享/移动/重命名/删除），
  * 内部按步骤切换：移动选目录 / 分享设置 / 重命名输入 / 删除确认。
+ * @param initialStep 打开时停在的步骤；行尾内联按钮传入具体动作，跳过菜单直接进对应步骤
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FileActionSheet(
+internal fun FileActionSheet(
     file: ShareFile,
     viewModel: QuarkCloudViewModel,
+    initialStep: ActionStep = ActionStep.MENU,
     onDismiss: () -> Unit
 ) {
-    var step by remember { mutableStateOf(ActionStep.MENU) }
+    var step by remember(initialStep) { mutableStateOf(initialStep) }
     // 移动目标浏览用独立状态（moveUiState），不影响主列表
     val moveState by viewModel.moveUiState.collectAsState()
     val operating = viewModel.isOperating

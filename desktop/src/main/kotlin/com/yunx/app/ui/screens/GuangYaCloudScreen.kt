@@ -76,6 +76,7 @@ import com.yunx.app.ui.items.MultiSelectBar
 import com.yunx.app.ui.resolve.BackToParentItem
 import com.yunx.app.ui.resolve.CrumbBar
 import com.yunx.app.ui.resolve.DownloadLinkDialog
+import com.yunx.app.ui.resolve.FileRowAction
 import com.yunx.app.ui.resolve.ShareFileRow
 import com.yunx.app.ui.viewmodel.GuangYaCloudUiState
 import com.yunx.app.ui.viewmodel.GuangYaCloudViewModel
@@ -288,13 +289,31 @@ fun GuangYaCloudScreen(
                                             showActionSheet = true
                                         }
                                     },
-                                    onMore = if (!viewModel.multiSelectMode && file.isdir) {
-                                        {
+                                    // 行尾内联操作：三点菜单里的动作直接铺到行上，一点到位
+                                    // （多选模式收起，改由底部批量栏承担）
+                                    actions = if (viewModel.multiSelectMode) emptyList() else buildList {
+                                        add(FileRowAction(label = if (file.isdir) "下载文件夹" else "下载", icon = Icons.Outlined.Download) {
                                             viewModel.openActions(file)
-                                            showActionSheet = true
-                                        }
-                                    } else {
-                                        null
+                                            if (file.isdir) viewModel.downloadFolder() else viewModel.downloadFile()
+                                            viewModel.dismissActions()
+                                        })
+                                        add(FileRowAction(label = "分享", icon = Icons.Outlined.Share) {
+                                            viewModel.openActions(file)
+                                            showShare = true
+                                        })
+                                        add(FileRowAction(label = "移动到", icon = Icons.Outlined.DriveFileMove) {
+                                            viewModel.openActions(file)
+                                            viewModel.openMoveRoot()
+                                            showMove = true
+                                        })
+                                        add(FileRowAction(label = "重命名", icon = Icons.Outlined.Edit) {
+                                            viewModel.openActions(file)
+                                            showRename = true
+                                        })
+                                        add(FileRowAction(label = "删除", icon = Icons.Outlined.Delete, destructive = true) {
+                                            viewModel.openActions(file)
+                                            showDeleteConfirm = true
+                                        })
                                     },
                                     onLongClick = if (!viewModel.multiSelectMode) {
                                         { viewModel.enterMultiSelect(file) }

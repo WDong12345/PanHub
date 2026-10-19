@@ -33,7 +33,6 @@ import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.SaveAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -58,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -630,6 +630,17 @@ internal fun CrumbBar(
     }
 }
 
+/**
+ * 文件行尾的内联操作按钮描述。
+ * [label] 同时作为按钮的无障碍描述（悬停/读屏可见），[destructive] 用错误色渲染（如删除）。
+ */
+internal data class FileRowAction(
+    val label: String,
+    val icon: ImageVector,
+    val destructive: Boolean = false,
+    val onClick: () -> Unit
+)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ShareFileRow(
@@ -637,8 +648,8 @@ internal fun ShareFileRow(
     onClick: () -> Unit,
     /** 非空时行尾显示「转存」按钮 */
     onSave: (() -> Unit)? = null,
-    /** 非空时行尾显示「更多」按钮（打开文件操作菜单） */
-    onMore: (() -> Unit)? = null,
+    /** 行尾内联操作按钮（下载/分享/移动/重命名/删除），点击直达对应动作 */
+    actions: List<FileRowAction> = emptyList(),
     /** 长按进入多选（多选模式下为 null） */
     onLongClick: (() -> Unit)? = null,
     /** 多选模式：是否选中 */
@@ -735,21 +746,29 @@ internal fun ShareFileRow(
                     )
                 }
             }
-            if (onMore != null) {
-                IconButton(onClick = onMore, modifier = Modifier.size(36.dp)) {
+            // 行尾内联操作：原先要「选中文件 → 点三点菜单 → 再点动作」两跳，现在一跳到位
+            actions.forEach { action ->
+                IconButton(onClick = action.onClick, modifier = Modifier.size(34.dp)) {
                     Icon(
-                        imageVector = Icons.Outlined.MoreVert,
-                        contentDescription = "更多",
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        imageVector = action.icon,
+                        contentDescription = action.label,
+                        modifier = Modifier.size(17.dp),
+                        tint = if (action.destructive) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        }
                     )
                 }
             }
-            Icon(
-                imageVector = Icons.Outlined.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.outline
-            )
+            // 行尾箭头：仅在没有内联按钮时显示（按钮本身就是可操作的明示，再叠箭头只会挤掉文件名）
+            if (actions.isEmpty()) {
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.outline
+                )
+            }
         }
     }
 }

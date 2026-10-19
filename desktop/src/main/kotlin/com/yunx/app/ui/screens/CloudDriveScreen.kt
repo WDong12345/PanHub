@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
@@ -65,7 +66,9 @@ import com.yunx.app.ui.components.ScrollToTopButton
 import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.BackToParentItem
 import com.yunx.app.ui.resolve.CrumbBar
+import com.yunx.app.ui.resolve.FileRowAction
 import com.yunx.app.ui.resolve.ShareFileRow
+import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.ui.viewmodel.QuarkCloudUiState
 import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
 
@@ -98,6 +101,12 @@ fun CloudDriveScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     // 新建文件夹弹窗（窗口内覆盖层）
     var showCreateFolder by remember { mutableStateOf(false) }
+    // 行尾内联按钮要直达的操作步骤（点文件行仍是完整菜单，内联按钮跳过菜单进对应步骤）
+    var actionStep by remember { mutableStateOf(ActionStep.MENU) }
+    val openActionStep: (ShareFile, ActionStep) -> Unit = { file, step ->
+        viewModel.openActions(file)
+        actionStep = step
+    }
 
     // 操作结果提示（放在本层：弹窗关闭后仍能正常弹出）
     LaunchedEffect(viewModel.cloudMessage) {
@@ -273,14 +282,49 @@ fun CloudDriveScreen(
                         } else if (file.isdir) {
                             viewModel.openFolder(file)
                         } else {
+                            // 复位步骤：否则上次内联按钮留下的 RENAME/DELETE 会让这次点行直接落到那一步
+                            actionStep = ActionStep.MENU
                             viewModel.openActions(file)
                         }
                     },
-                    // 多选模式：隐藏行尾按钮；非多选时文件夹显示「更多」、全部可长按进入多选
-                    onMore = if (!viewModel.multiSelectMode && file.isdir) {
-                        { viewModel.openActions(file) }
-                    } else {
-                        null
+                    // 行尾内联操作：三点菜单里的动作铺到每一行，多选模式下收起（交给底部批量栏）
+                    actions = if (viewModel.multiSelectMode) emptyList() else buildList {
+                        add(
+                            FileRowAction(
+                                label = if (file.isdir) "下载文件夹" else "下载",
+                                icon = Icons.Outlined.Download
+                            ) {
+                                viewModel.openActions(file)
+                                if (file.isdir) viewModel.downloadFolder() else viewModel.downloadFile()
+                                viewModel.dismissActions()
+                            }
+                        )
+                        add(
+                            FileRowAction(label = "分享", icon = Icons.Outlined.Share) {
+                                openActionStep(file, ActionStep.SHARE)
+                            }
+                        )
+                        add(
+                            FileRowAction(label = "移动到", icon = Icons.Outlined.DriveFileMove) {
+                                viewModel.openActions(file)
+                                viewModel.openMoveRoot()
+                                actionStep = ActionStep.MOVE
+                            }
+                        )
+                        add(
+                            FileRowAction(label = "重命名", icon = Icons.Outlined.Edit) {
+                                openActionStep(file, ActionStep.RENAME)
+                            }
+                        )
+                        add(
+                            FileRowAction(
+                                label = "删除",
+                                icon = Icons.Outlined.Delete,
+                                destructive = true
+                            ) {
+                                openActionStep(file, ActionStep.DELETE)
+                            }
+                        )
                     },
                     onLongClick = if (!viewModel.multiSelectMode) {
                         { viewModel.enterMultiSelect(file) }
@@ -337,12 +381,16 @@ fun CloudDriveScreen(
     }
     }
 
-    // 文件操作弹窗（更多按钮/点击文件 → 下载/分享/移动/重命名/删除）
+    // 文件操作弹窗（行尾内联按钮 → 直达对应步骤；点击文件行 → 完整菜单）
     viewModel.actionFile?.let { file ->
         FileActionSheet(
             file = file,
             viewModel = viewModel,
-            onDismiss = { viewModel.dismissActions() }
+            initialStep = actionStep,
+            onDismiss = {
+                actionStep = ActionStep.MENU
+                viewModel.dismissActions()
+            }
         )
     }
 

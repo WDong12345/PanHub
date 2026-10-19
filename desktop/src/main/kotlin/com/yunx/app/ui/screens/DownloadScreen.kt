@@ -67,15 +67,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.yunx.app.data.db.DownloadTaskEntity
 import com.yunx.app.data.download.DownloadSaver
@@ -560,14 +565,27 @@ private fun FolderDownloadGroup(
                         )
                     }
                     // 子任务列表（紧凑行，含子文件夹内文件）
+                    // 按相对路径排序：同一子目录的文件相邻，缩进出来的层级才是连续的
+                    // 左侧竖线 + 逐级缩进，让「文件夹 > 子文件夹 > 文件」的从属关系一眼可见
+                    val guideColor = MaterialTheme.colorScheme.outlineVariant
                     Column(
-                        modifier = Modifier.padding(10.dp),
+                        modifier = Modifier
+                            .padding(start = 28.dp, end = 10.dp, top = 2.dp, bottom = 10.dp)
+                            .drawBehind {
+                                drawLine(
+                                    color = guideColor,
+                                    start = Offset(0f, 0f),
+                                    end = Offset(0f, size.height),
+                                    strokeWidth = 2.dp.toPx()
+                                )
+                            },
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        tasks.forEach { task ->
+                        tasks.sortedBy { it.fileName.lowercase() }.forEach { task ->
                             DownloadSubTaskRow(
                                 task = task,
                                 stats = stats[task.id],
+                                depth = (task.fileName.count { it == '/' } - 1).coerceAtLeast(0),
                                 onPause = { onPause(task.id) },
                                 onResume = { onResume(task.id) },
                                 onRemove = { onRemove(task) },
@@ -585,11 +603,13 @@ private fun FolderDownloadGroup(
 /**
  * 文件夹组内子任务紧凑行：相对路径 + 状态 + 进度条 + 操作按钮。
  * 相比独立任务卡更轻量，适合嵌套在文件夹组内。
+ * @param depth 相对顶级目录的层级深度（0 = 直接位于顶级目录下），用于逐级向右缩进
  */
 @Composable
 private fun DownloadSubTaskRow(
     task: DownloadTaskEntity,
     stats: DownloadStats?,
+    depth: Int = 0,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onRemove: () -> Unit,
@@ -609,11 +629,15 @@ private fun DownloadSubTaskRow(
     }
     // 显示相对路径（去掉顶级目录前缀，如 "A/B/b.mp4" → "B/b.mp4"）
     val displayName = task.fileName.substringAfter('/')
+    // 所在子目录弱化显示、文件名正常显示：层级已由缩进表达，前缀只作辅助线索
+    val dirPrefix = displayName.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }
+    val fileNameOnly = displayName.substringAfterLast('/')
     // 长按任务行弹出操作菜单（复制直链 / 重新下载 / 删除）
     var showMenu by remember { mutableStateOf(false) }
 
     Surface(
         modifier = Modifier
+            .padding(start = (depth * 16).dp)
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = {})
@@ -641,7 +665,14 @@ private fun DownloadSubTaskRow(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = displayName,
+                        text = buildAnnotatedString {
+                            if (dirPrefix != null) {
+                                withStyle(
+                                    SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                ) { append("$dirPrefix/") }
+                            }
+                            append(fileNameOnly)
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
