@@ -155,15 +155,10 @@ class UCCoudViewModel(
      */
     suspend fun listSubDirs(dirFid: String): List<DirNode> {
         val cookie = cookieProvider() ?: return emptyList()
-        val dirs = mutableListOf<DirNode>()
-        var page = 1
-        while (page <= TREE_DIR_MAX_PAGES) {
-            val batch = api.listCloudFiles(dirFid, cookie, page, TREE_DIR_PAGE_SIZE) ?: break
-            dirs += batch.filter { it.isdir }.map { DirNode(it.fid, it.fname) }
-            if (batch.size < TREE_DIR_PAGE_SIZE || batch.any { !it.isdir }) break
-            page++
-        }
-        return dirs
+        // 复用全量翻页：服务端单页会截到 50 条，只取一页会让大目录的树缺项（与右侧列表同源）
+        return (api.listAllCloudFiles(dirFid, cookie) ?: emptyList())
+            .filter { it.isdir }
+            .map { DirNode(it.fid, it.fname) }
     }
 
     /** 整段替换浏览栈跳到指定路径（树上点任意节点）：空链即根目录 */
@@ -258,7 +253,7 @@ class UCCoudViewModel(
                 return@launch
             }
             try {
-                val files = api.listCloudFiles(dirFid, cookie) ?: emptyList()
+                val files = api.listAllCloudFiles(dirFid, cookie) ?: emptyList()
                 _moveUiState.value = UCCloudUiState.Loaded(files, pathNames, dirFid)
             } catch (e: Exception) {
                 _moveUiState.value = UCCloudUiState.Error(e.message ?: "加载失败")
@@ -352,7 +347,7 @@ class UCCoudViewModel(
         depth: Int
     ) {
         if (depth > 12) return
-        val list = runCatching { api.listCloudFiles(dirFid, cookie) ?: emptyList() }
+        val list = runCatching { api.listAllCloudFiles(dirFid, cookie) ?: emptyList() }
             .getOrDefault(emptyList())
         // 先文件后文件夹（与目录列表展示顺序一致）
         list.filter { !it.isdir }.forEach { result.add(it to "$prefix/${it.fname}") }
@@ -361,8 +356,8 @@ class UCCoudViewModel(
         }
     }
 
-    /** 下载整个文件夹（操作菜单）：递归收集所有文件，保持目录结构保存到 Download */
-    fun downloadFolder() {
+    /** 下载整个文件夹（操作菜单）：递归收集所有文件，保持目录结构保存到指定目录（空=全局设置） */
+    fun downloadFolder(saveDir: String = "") {
         val folder = actionFile ?: return
         if (!folder.isdir) return
         viewModelScope.launch {
@@ -394,7 +389,8 @@ class UCCoudViewModel(
                             fileName = relPath, // 相对路径：Download/文件夹A/子目录/文件.mp4
                             size = link.size,
                             platform = DownloadPlatform.UC,
-                            headers = downloadHeaders(cookie)
+                            headers = downloadHeaders(cookie),
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -417,7 +413,10 @@ class UCCoudViewModel(
     }
 
     /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
-    fun downloadFile() {
+    fun downloadFile() = downloadFileTo("")
+
+    /** 下载到指定目录：单次覆盖保存目录，不改「设置 → 储存目录」的全局设置 */
+    fun downloadFileTo(saveDir: String) {
         val file = actionFile ?: return
         viewModelScope.launch {
             isOperating = true
@@ -435,6 +434,7 @@ class UCCoudViewModel(
                     fileName = fileName,
                     size = link.size,
                     platform = DownloadPlatform.UC,
+                    saveDir = saveDir,
                     headers = mapOf(
                         "Cookie" to cookie,
                         // UC OSS 直链：必须带官方 Referer（否则被 Callback 限速 ~100KB/s）+ Origin，与解析页 UC 分支一致
@@ -563,7 +563,7 @@ class UCCoudViewModel(
     // ---------- 批量操作 ----------
 
     /** 批量下载（不切页，保持处理中弹窗；选中文件夹时递归下载整个文件夹并保持目录结构） */
-    fun downloadSelected() {
+    fun downloadSelected(saveDir: String = "") {
         val files = _selected.toList()
         if (files.isEmpty()) return
         viewModelScope.launch {
@@ -759,7 +759,7 @@ class UCCoudViewModel(
                 return@launch
             }
             try {
-                val files = api.listCloudFiles(current.dirFid, cookie) ?: emptyList()
+                val files = api.listAllCloudFiles(current.dirFid, cookie) ?: emptyList()
                 _uiState.value = UCCloudUiState.Loaded(files, current.pathNames, current.dirFid)
             } catch (e: Exception) {
                 cloudMessage = e.message ?: "刷新失败"
@@ -789,7 +789,7 @@ class UCCoudViewModel(
                 return@launch
             }
             try {
-                val files = api.listCloudFiles(dirFid, cookie) ?: emptyList()
+                val files = api.listAllCloudFiles(dirFid, cookie) ?: emptyList()
                 _uiState.value = UCCloudUiState.Loaded(files, pathNames, dirFid)
             } catch (e: Exception) {
                 _uiState.value = UCCloudUiState.Error(e.message ?: "加载失败")

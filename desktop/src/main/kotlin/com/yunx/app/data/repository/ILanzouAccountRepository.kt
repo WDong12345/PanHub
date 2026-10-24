@@ -2,6 +2,8 @@ package com.yunx.app.data.repository
 
 import com.yunx.app.data.db.ILanzouAccountDao
 import com.yunx.app.data.db.ILanzouAccountEntity
+import com.yunx.app.data.db.resolveAccountSlot
+import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.ILanzouApi
 import kotlinx.coroutines.flow.Flow
 
@@ -19,20 +21,31 @@ class ILanzouAccountRepository(
 
     suspend fun getAccount(): ILanzouAccountEntity? = dao.getAccount()
 
+    /** 该平台全部账号可用的凭证（主账号在前）：多账号下载（实验性 C1）轮换取链用 */
+    suspend fun allCredentials(): List<String> =
+        dao.getAccounts().map { it.appToken }.filter { it.isNotBlank() }
+
     /** 账号密码登录：取/复用设备标识 → 换 appToken → 拉账号信息 → 落库。 */
-    suspend fun login(account: String, password: String): Result<ILanzouAccountEntity> = runCatching {
+    suspend fun login(
+        account: String,
+        password: String,
+        newAccount: Boolean = false
+    ): Result<ILanzouAccountEntity> = runCatching {
         val existing = dao.getAccount()
         val uuid = existing?.uuid?.takeIf { isValidUuid(it) } ?: api.getUuid()
         val token = api.login(account, password, uuid)
         val info = api.fetchAccountInfo(token, uuid)
+        val slot = resolveAccountSlot(DownloadPlatform.ILANZOU, existing, newAccount)
         val entity = ILanzouAccountEntity(
-            id = "ilanzou",
+            id = slot.id,
             appToken = token,
             uuid = uuid,
             account = account.trim(),
             password = password,
             userId = info?.userId.orEmpty(),
-            nickname = info?.nickname.orEmpty().ifBlank { account.trim() }
+            nickname = info?.nickname.orEmpty().ifBlank { account.trim() },
+            isPrimary = slot.isPrimary,
+            remark = slot.remark
         )
         dao.upsert(entity)
         entity
@@ -46,16 +59,6 @@ class ILanzouAccountRepository(
         val uuid = acc.uuid.takeIf { isValidUuid(it) } ?: return null
         val token = api.login(acc.account, acc.password, uuid)
         dao.upsert(acc.copy(appToken = token, updatedAt = System.currentTimeMillis()))
-        return token
-    }
-
-    /** 重新登录（appToken 失效时由云盘 VM 调用）；成功返回新 token。 */
-    suspend fun relogin(): String? {
-        val acc = dao.getAccount() ?: return null
-        if (acc.password.isBlank()) return null
-        val uuid = acc.uuid.takeIf { isValidUuid(it) } ?: api.getUuid()
-        val token = api.login(acc.account, acc.password, uuid)
-        dao.upsert(acc.copy(appToken = token, uuid = uuid, updatedAt = System.currentTimeMillis()))
         return token
     }
 

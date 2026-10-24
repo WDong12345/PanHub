@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.ui.SnackbarController
+import com.yunx.app.ui.components.DownloadDirRow
 import com.yunx.app.ui.components.FadeAlertDialog
 import com.yunx.app.util.DesktopActions
 
@@ -42,6 +43,10 @@ fun DownloadLinkDialog(
     link: DownloadLink,
     onDownload: () -> Unit,
     onDismiss: () -> Unit,
+    /** 本次下载的保存目录；null/空 = 跟随全局设置（沿用旧提示文案） */
+    saveDir: String? = null,
+    /** 提供后弹窗内显示「选择/更改保存目录」入口 */
+    onChangeSaveDir: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     FadeAlertDialog(
@@ -92,10 +97,26 @@ fun DownloadLinkDialog(
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "点击「开始下载」将分片多线程下载并保存到 Download 目录",
+                    text = when {
+                        !saveDir.isNullOrBlank() -> "保存到：$saveDir"
+                        onChangeSaveDir != null -> "将保存到默认下载目录（可点击下方更改）"
+                        else -> "点击「开始下载」将分片多线程下载并保存到下面的目录"
+                    },
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                if (onChangeSaveDir != null) {
+                    // 解析页支持「只改这一次任务的保存目录」（不覆盖全局设置）
+                    TextButton(onClick = onChangeSaveDir) {
+                        Text(if (saveDir.isNullOrBlank()) "选择保存目录" else "更改保存目录")
+                    }
+                } else {
+                    // 云盘页没有任务级目录入口：提供就地改全局下载目录（与「设置 → 储存目录」同一项配置）
+                    DownloadDirRow()
+                }
             }
         },
         confirmButton = {

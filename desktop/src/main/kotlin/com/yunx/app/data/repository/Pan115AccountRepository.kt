@@ -2,6 +2,8 @@ package com.yunx.app.data.repository
 
 import com.yunx.app.data.db.Pan115AccountDao
 import com.yunx.app.data.db.Pan115AccountEntity
+import com.yunx.app.data.db.resolveAccountSlot
+import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.Pan115Api
 import com.yunx.app.data.network.Pan115Constants
 import com.yunx.app.util.CookieCleaner
@@ -22,19 +24,26 @@ class Pan115AccountRepository(
 
     suspend fun getAccount(): Pan115AccountEntity? = dao.getAccount()
 
+    /** 该平台全部账号可用的凭证（主账号在前）：多账号下载（实验性 C1）轮换取链用 */
+    suspend fun allCredentials(): List<String> =
+        dao.getAccounts().map { it.cookie }.filter { it.isNotBlank() }
+
     /**
      * 保存网页登录 Cookie：先用 `/user/info` 确认登录态有效并取昵称（脱敏手机号），成功才落库。
      * @param cookie 内嵌浏览器登录 115.com 后取到的完整 Cookie
      */
-    suspend fun saveCookie(cookie: String): Boolean {
+    suspend fun saveCookie(cookie: String, newAccount: Boolean = false): Boolean {
         val value = cookie.trim()
         if (!Pan115Constants.hasLoginCookie(value)) return false
         val nickname = api.fetchNickname(value) ?: return false
+        val slot = resolveAccountSlot(DownloadPlatform.PAN115, dao.getAccount(), newAccount)
         dao.upsert(
             Pan115AccountEntity(
-                id = "pan115",
+                id = slot.id,
                 cookie = value,
-                nickname = nickname.ifBlank { "115用户" }
+                nickname = nickname.ifBlank { "115用户" },
+                isPrimary = slot.isPrimary,
+                remark = slot.remark
             )
         )
         return true

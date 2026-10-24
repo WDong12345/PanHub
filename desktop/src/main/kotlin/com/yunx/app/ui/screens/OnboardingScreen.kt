@@ -108,7 +108,7 @@ private const val FADE_OUT_MS = 140
  * - 背景：Animated Blob（流体渐变），自绘实现，不引第三方库。
  *
  * ★ 桌面端差异：上游的「权限准备」（通知 / 后台运行 / 存储）在桌面没有对应概念，换成了桌面版自己的
- *   功能特性页；第 4 页是本移植版新增的首次运行配置页。
+ *   功能特性页；第 4 页是桌面版新增的首次运行配置页。
  * ★ 限宽：手机端页面本来就只有几百 dp 宽，桌面窗口默认 1100dp —— 所有页面正文都限宽
  *   居中（[CONTENT_MAX_WIDTH]），否则一行文本横跨整个窗口，观感与上游差异极大。
  */
@@ -618,7 +618,7 @@ private fun TermsPage() {
 
         Spacer(modifier = Modifier.height(18.dp))
         Text(
-            text = "点击下方「开始使用」即表示你已阅读并同意以上条款",
+            text = "点击下方「下一步」即表示你已阅读并同意以上条款",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,

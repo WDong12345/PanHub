@@ -21,6 +21,9 @@ object WindowsToastNotifier {
     private const val UPDATE_THROTTLE_MS = 1000L
 
     private val isWindows = System.getProperty("os.name").lowercase().contains("win")
+    /** 测试/无头环境可关闭通知交互（默认开启；不影响下载本身） */
+    @Volatile
+    var enabled: Boolean = true
     private var proc: Process? = null
     private var writer: BufferedWriter? = null
     private val starting = AtomicBoolean(false)
@@ -83,6 +86,7 @@ object WindowsToastNotifier {
     /** 下载会话开始（首个任务启动时调用；上一个 PowerShell 进程已退出时会重新拉起） */
     @Synchronized
     fun sessionStart() {
+        if (!enabled) return
         if (!isWindows) return
         if (proc?.isAlive == true) return
         if (!starting.compareAndSet(false, true)) return
@@ -120,6 +124,7 @@ object WindowsToastNotifier {
      */
     @Synchronized
     fun updateProgress(doneSum: Long, totalSum: Long, line1: String, statusLine: String, speedText: String, statusLabel: String) {
+        if (!enabled) return
         lastDoneSum = doneSum
         lastTotalSum = totalSum
         if (!isWindows || writer == null) return
@@ -141,6 +146,7 @@ object WindowsToastNotifier {
      */
     @Synchronized
     fun sessionEnd() {
+        if (!enabled) return
         if (!isWindows) return
         val completed = lastTotalSum > 0 && lastDoneSum >= lastTotalSum
         lastDoneSum = 0; lastTotalSum = 0

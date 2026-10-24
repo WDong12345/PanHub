@@ -26,9 +26,22 @@ class C139AccountViewModel(
             initialValue = null
         )
 
+    /**
+     * 「添加账号」标记：网盘页账号弹窗点「添加账号」时置位，登录页关闭时清掉。
+     * 置位后这一次登录会落成新的账号行，而不是覆盖当前主账号（见 resolveAccountSlot）。
+     */
+    private var addNewAccount = false
+
+    fun beginAddAccount() { addNewAccount = true }
+
+    fun cancelAddAccount() { addNewAccount = false }
+
     /** 保存 139 Cookie；返回是否保存成功 */
-    suspend fun saveC139Account(cookie: String): Boolean =
-        repository.saveC139Account(cookie)
+    suspend fun saveC139Account(cookie: String): Boolean {
+        val saved = repository.saveC139Account(cookie, newAccount = addNewAccount)
+        if (saved) addNewAccount = false
+        return saved
+    }
 
     /** 退出登录：清除本地 Cookie */
     fun logout() {

@@ -35,9 +35,13 @@ class DownloadViewModel(private val manager: DownloadManager) : ViewModel() {
         url: String,
         fileName: String,
         headers: Map<String, String> = emptyMap(),
-        platform: String = ""
+        platform: String = "",
+        /** 本次任务的保存目录（空串 = 跟随全局设置） */
+        saveDir: String = ""
     ) {
-        viewModelScope.launch { manager.enqueue(url, fileName, headers, platform = platform) }
+        viewModelScope.launch {
+            manager.enqueue(url, fileName, headers, platform = platform, saveDir = saveDir)
+        }
     }
 
     fun pause(id: Long) = manager.pause(id)

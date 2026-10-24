@@ -68,6 +68,16 @@ class XunleiAccountViewModel(
         loginError = null
     }
 
+    /**
+     * 「添加账号」标记：网盘页账号弹窗点「添加账号」时置位，登录页关闭时清掉。
+     * 置位后这一次登录会落成新的账号行，而不是覆盖当前主账号（见 resolveAccountSlot）。
+     */
+    private var addNewAccount = false
+
+    fun beginAddAccount() { addNewAccount = true }
+
+    fun cancelAddAccount() { addNewAccount = false }
+
     /** 账号密码登录 */
     fun login(username: String, password: String) {
         lastUsername = username.trim()
@@ -111,8 +121,12 @@ class XunleiAccountViewModel(
                         }
                     }
                 } else if (step.sessionKey.isNotBlank() && step.sessionId.isNotBlank()) {
-                    val ok = repository.finishLogin(step, username.trim())
-                    if (!ok) loginError = "登录失败，无法换取凭证"
+                    val ok = repository.finishLogin(step, username.trim(), newAccount = addNewAccount)
+                    if (ok) {
+                        addNewAccount = false
+                    } else {
+                        loginError = "登录失败，无法换取凭证"
+                    }
                 } else {
                     loginError = step.message.ifBlank { "登录失败，请检查账号密码" }
                 }
@@ -163,14 +177,24 @@ class XunleiAccountViewModel(
         viewModelScope.launch {
             loginError = null
             val ok = try {
-                repository.loginWithSms(mobile.trim(), code.trim(), creditKey, smsToken)
+                repository.loginWithSms(
+                    mobile.trim(),
+                    code.trim(),
+                    creditKey,
+                    smsToken,
+                    newAccount = addNewAccount
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 loginError = "登录失败，请检查网络后重试"
                 return@launch
             }
-            if (!ok) loginError = "验证码校验失败"
+            if (ok) {
+                addNewAccount = false
+            } else {
+                loginError = "验证码校验失败"
+            }
         }
     }
 
@@ -178,7 +202,11 @@ class XunleiAccountViewModel(
      * 网页登录（pan.xunlei.com）自动检测/手动保存共用入口：解析 + 校验 + 落库。
      * 返回 false 表示「还没有真正登录」，登录页据此继续轮询而不是报错。
      */
-    suspend fun saveWebCredential(raw: String): Boolean = repository.saveWebCredential(raw)
+    suspend fun saveWebCredential(raw: String): Boolean {
+        val saved = repository.saveWebCredential(raw, newAccount = addNewAccount)
+        if (saved) addNewAccount = false
+        return saved
+    }
 
     /** 切换登录方式 / 进入登录页时清掉上一步的中间态（旧 creditkey/token 不能带到新流程里提交） */
     fun resetLoginStep() {

@@ -192,15 +192,6 @@ class XunleiApi(
         }
     }
 
-    /** 兜底：OAuth2 密码直换 token（官方抓包证实此路径不存在，v3/login + signin_token 才是正路） */
-    suspend fun loginWithTokenPassword(
-        username: String,
-        password: String,
-        deviceId: String,
-        captchaToken: String,
-        checkCode: String = ""
-    ): Pair<String, String>? = null
-
     /** 4. 用 v3/smslogin 返回的 sessionID 换取 access_token（官方抓包 POST /v1/auth/signin/token）。
      * body：{"client_id":"Xp6vsxz_7IYVw2BB","client_secret":"Xp6vsy4tN9toTVdMSpomVdXpRmES",
      *        "provider":"access_end_point_token","signin_token":"<sessionID>"}

@@ -69,6 +69,7 @@ import com.yunx.app.data.backup.AuthBackupManager
 import com.yunx.app.data.db.AppDatabase
 import com.yunx.app.data.download.ChunkDownloader
 import com.yunx.app.data.download.DownloadManager
+import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.gopeed.GopeedEngine
 import com.yunx.app.data.network.BaiduApi
 import com.yunx.app.data.network.C139Api
@@ -90,7 +91,9 @@ import com.yunx.app.data.db.DownloadTaskEntity
 import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.ui.components.CloseChoice
 import com.yunx.app.ui.components.CloseConfirmDialog
+import com.yunx.app.util.DesktopActions
 import com.yunx.app.util.TrayManager
+import com.yunx.app.data.repository.AccountDirectory
 import com.yunx.app.data.repository.BaiduAccountRepository
 import com.yunx.app.data.repository.BaiduResolveRepository
 import com.yunx.app.data.repository.C139AccountRepository
@@ -159,6 +162,7 @@ import com.yunx.app.ui.viewmodel.ILanzouAccountViewModel
 import com.yunx.app.ui.viewmodel.ILanzouCloudViewModel
 import com.yunx.app.ui.viewmodel.LanzouAccountViewModel
 import com.yunx.app.ui.viewmodel.LanzouCloudViewModel
+import com.yunx.app.ui.viewmodel.MultiAccountViewModel
 import com.yunx.app.ui.viewmodel.Pan115AccountViewModel
 import com.yunx.app.ui.viewmodel.Pan115CloudViewModel
 import com.yunx.app.ui.viewmodel.Pan123AccountViewModel
@@ -329,6 +333,9 @@ fun MainScreen(
             retryCountProvider = { settings.downloadRetryCount },
             keepAwakeProvider = { settings.keepAwakeWhileDownloading },
             showSpeedProvider = { settings.notificationShowSpeed },
+            // 实验性直写：单线程/多线程分别开关（设置 → 实验性功能）
+            directWriteSingleProvider = { settings.directWriteSingleThread },
+            directWriteMultiProvider = { settings.directWriteMultiThread },
             // 下载引擎开关：选了 Gopeed 时新任务交给外部引擎（还需内核已导入、平台非 GitHub）
             engineEnabledProvider = { settings.downloadEngine == SettingsRepository.ENGINE_GOPEED }
         )
@@ -404,6 +411,31 @@ fun MainScreen(
     val lanzouViewModel: LanzouAccountViewModel = viewModel(
         factory = LanzouAccountViewModel.Factory(lanzouRepository)
     )
+    // 多账号目录：10 个平台统一的「列表 / 设主账号 / 改备注 / 退出单个账号」
+    val accountDirectory = remember(db) { AccountDirectory(db) }
+    val multiAccountViewModel: MultiAccountViewModel = viewModel(
+        factory = MultiAccountViewModel.Factory(accountDirectory)
+    )
+
+    /**
+     * 账号弹窗点「添加账号」：先清该平台的内嵌浏览器登录态（否则网页登录会自动登回旧账号），
+     * 再标记「这次登录落成新账号」，最后打开对应平台的登录页。
+     */
+    val onAddAccount: (String) -> Unit = { platform ->
+        multiAccountViewModel.prepareAddAccount(platform)
+        when (platform) {
+            DownloadPlatform.QUARK -> { viewModel.beginAddAccount(); showQuarkLogin = true }
+            DownloadPlatform.UC -> { ucViewModel.beginAddAccount(); showUCLogin = true }
+            DownloadPlatform.XUNLEI -> { xunleiViewModel.beginAddAccount(); showXunleiLogin = true }
+            DownloadPlatform.BAIDU -> { baiduViewModel.beginAddAccount(); showBaiduLogin = true }
+            DownloadPlatform.C139 -> { c139ViewModel.beginAddAccount(); showC139Login = true }
+            DownloadPlatform.PAN123 -> { pan123ViewModel.beginAddAccount(); showPan123Login = true }
+            DownloadPlatform.PAN115 -> { pan115ViewModel.beginAddAccount(); showPan115Login = true }
+            DownloadPlatform.GUANGYA -> { guangyaViewModel.beginAddAccount(); showGuangYaLogin = true }
+            DownloadPlatform.ILANZOU -> { ilanzouViewModel.beginAddAccount(); showILanzouLogin = true }
+            DownloadPlatform.LANZOU -> { lanzouViewModel.beginAddAccount(); showLanzouLogin = true }
+        }
+    }
     val quarkCloudViewModel: QuarkCloudViewModel = viewModel(
         factory = QuarkCloudViewModel.Factory(
             api,
@@ -613,7 +645,7 @@ fun MainScreen(
     if (showQuarkLogin) {
         QuarkLoginScreen(
             viewModel = viewModel,
-            onBack = { showQuarkLogin = false },
+            onBack = { viewModel.cancelAddAccount(); showQuarkLogin = false },
             onSaved = { showQuarkLogin = false }
         )
         return
@@ -623,7 +655,7 @@ fun MainScreen(
     if (showUCLogin) {
         UCLoginScreen(
             viewModel = ucViewModel,
-            onBack = { showUCLogin = false },
+            onBack = { ucViewModel.cancelAddAccount(); showUCLogin = false },
             onSaved = { showUCLogin = false }
         )
         return
@@ -646,7 +678,7 @@ fun MainScreen(
     if (showBaiduLogin) {
         BaiduLoginScreen(
             viewModel = baiduViewModel,
-            onBack = { showBaiduLogin = false },
+            onBack = { baiduViewModel.cancelAddAccount(); showBaiduLogin = false },
             onSaved = { showBaiduLogin = false }
         )
         return
@@ -656,7 +688,7 @@ fun MainScreen(
     if (showC139Login) {
         C139LoginScreen(
             viewModel = c139ViewModel,
-            onBack = { showC139Login = false },
+            onBack = { c139ViewModel.cancelAddAccount(); showC139Login = false },
             onSaved = { showC139Login = false }
         )
         return
@@ -666,7 +698,7 @@ fun MainScreen(
     if (showPan115Login) {
         Pan115LoginScreen(
             viewModel = pan115ViewModel,
-            onBack = { showPan115Login = false },
+            onBack = { pan115ViewModel.cancelAddAccount(); showPan115Login = false },
             onSaved = { showPan115Login = false }
         )
         return
@@ -879,6 +911,8 @@ fun MainScreen(
                             ilanzouCloudViewModel = ilanzouCloudViewModel,
                             lanzouCloudViewModel = lanzouCloudViewModel,
                             driveQuotaViewModel = driveQuotaViewModel,
+                            multiAccount = multiAccountViewModel,
+                            onAddAccount = onAddAccount,
                             onQuarkLogin = { showQuarkLogin = true },
                             onQuarkLogout = { viewModel.logout() },
                             // 网盘页下载同样不自动切页：批量挑文件时留在原目录，进度自己去下载页看
@@ -1106,7 +1140,7 @@ fun MainScreen(
         PageOverlay(visible = showXunleiLogin) {
             XunleiLoginScreen(
                 viewModel = xunleiViewModel,
-                onBack = { showXunleiLogin = false },
+                onBack = { xunleiViewModel.cancelAddAccount(); showXunleiLogin = false },
                 onSaved = { showXunleiLogin = false },
                 onVerify = { url, deviceId ->
                     xunleiVerifyUrl = url
@@ -1147,7 +1181,7 @@ fun MainScreen(
         PageOverlay(visible = showPan123Login) {
             Pan123LoginScreen(
                 viewModel = pan123ViewModel,
-                onBack = { showPan123Login = false },
+                onBack = { pan123ViewModel.cancelAddAccount(); showPan123Login = false },
                 onSaved = { showPan123Login = false }
             )
         }
@@ -1155,7 +1189,7 @@ fun MainScreen(
         PageOverlay(visible = showGuangYaLogin) {
             GuangYaLoginScreen(
                 viewModel = guangyaViewModel,
-                onBack = { showGuangYaLogin = false },
+                onBack = { guangyaViewModel.cancelAddAccount(); showGuangYaLogin = false },
                 onSaved = { showGuangYaLogin = false }
             )
         }
@@ -1163,7 +1197,7 @@ fun MainScreen(
         PageOverlay(visible = showILanzouLogin) {
             ILanzouLoginScreen(
                 viewModel = ilanzouViewModel,
-                onBack = { showILanzouLogin = false },
+                onBack = { ilanzouViewModel.cancelAddAccount(); showILanzouLogin = false },
                 onSaved = { showILanzouLogin = false }
             )
         }
@@ -1171,7 +1205,7 @@ fun MainScreen(
         PageOverlay(visible = showLanzouLogin) {
             LanzouLoginScreen(
                 viewModel = lanzouViewModel,
-                onBack = { showLanzouLogin = false },
+                onBack = { lanzouViewModel.cancelAddAccount(); showLanzouLogin = false },
                 onSaved = { showLanzouLogin = false }
             )
         }
@@ -1406,15 +1440,14 @@ fun MainScreen(
                 kotlinx.coroutines.delay(200)
                 ClipboardLinkController.consumeOpen()?.let { d ->
                     currentTab = MainTab.Resolve
+                    // 链接带提取码才解析得动；没带时解析会失败，失败后 ViewModel 会把原文回填到解析输入框，
+                    // 用户只要再补一个提取码即可重试（不必重新粘贴链接）—— 见 ResolveViewModel.prefillRequest
                     resolveViewModel.startResolve(d.text, d.parsed.pwd)
-                    // Windows 上 toFront() 单独调用不一定能夺取焦点，用 alwaysOnTop 瞬时切换确保置顶
-                    ClipboardLinkController.mainWindow?.let { w ->
-                        val wasOnTop = w.isAlwaysOnTop
-                        w.isAlwaysOnTop = true
-                        w.toFront()
-                        w.requestFocus()
-                        w.isAlwaysOnTop = wasOnTop
-                    }
+                    // 置前：先「还原」（窗口可能被最小化到任务栏，此时 toFront() 对它无效）再置顶置前
+                    DesktopActions.bringWindowToFront(ClipboardLinkController.mainWindow)
+                    // 弹窗是独立顶层窗口，此刻正在销毁、可能把前台还回去 → 稍后再补一次置前
+                    kotlinx.coroutines.delay(180)
+                    DesktopActions.bringWindowToFront(ClipboardLinkController.mainWindow)
                 }
             }
         }

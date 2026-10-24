@@ -63,6 +63,9 @@ object JcefHolder {
                         builder.addJcefArgs("--no-sandbox")
                     }
                     val settings = builder.getCefSettings()
+                    // 发布包只随带 locales/zh-CN.pak（见 portable-package.ps1 [2c/5]），
+                    // 这里显式指定 locale，避免按系统语言去找不存在的语言包
+                    settings.locale = "zh-CN"
                     settings.windowless_rendering_enabled = false
                     // CEF 要求 cache_path 必须是 root_cache_path 的子目录
                     settings.root_cache_path = File(AppContext.cacheDir, "jcef").absolutePath

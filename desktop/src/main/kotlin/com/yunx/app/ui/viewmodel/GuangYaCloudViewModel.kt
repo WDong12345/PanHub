@@ -273,8 +273,8 @@ class GuangYaCloudViewModel(
         }
     }
 
-    /** 下载整个文件夹（操作菜单）：递归收集所有文件，保持目录结构保存到 Download */
-    fun downloadFolder() {
+    /** 下载整个文件夹（操作菜单）：递归收集所有文件，保持目录结构保存到指定目录（空=全局设置） */
+    fun downloadFolder(saveDir: String = "") {
         val folder = actionFile ?: return
         if (!folder.isdir) return
         viewModelScope.launch {
@@ -302,7 +302,8 @@ class GuangYaCloudViewModel(
                             fileName = relPath,
                             size = link.size,
                             platform = DownloadPlatform.GUANGYA,
-                            headers = downloadHeaders()
+                            headers = downloadHeaders(),
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -325,7 +326,10 @@ class GuangYaCloudViewModel(
     }
 
     /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
-    fun downloadFile() {
+    fun downloadFile() = downloadFileTo("")
+
+    /** 下载到指定目录：单次覆盖保存目录，不改「设置 → 储存目录」的全局设置 */
+    fun downloadFileTo(saveDir: String) {
         val file = actionFile ?: return
         viewModelScope.launch {
             isOperating = true
@@ -338,6 +342,7 @@ class GuangYaCloudViewModel(
                     fileName = fileName,
                     size = link.size,
                     platform = DownloadPlatform.GUANGYA,
+                    saveDir = saveDir,
                     headers = downloadHeaders()
                 )
                 cloudMessage = "已加入下载：$fileName"
@@ -448,7 +453,7 @@ class GuangYaCloudViewModel(
     // ---------- 批量操作 ----------
 
     /** 批量下载（选中文件夹时递归下载整个文件夹并保持目录结构） */
-    fun downloadSelected() {
+    fun downloadSelected(saveDir: String = "") {
         val files = _selected.toList()
         if (files.isEmpty()) return
         viewModelScope.launch {

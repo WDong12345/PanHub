@@ -268,7 +268,7 @@ class C139CloudViewModel(
     }
 
     /** 下载整个文件夹（操作菜单）：递归收集所有文件，保持目录结构保存到 Download */
-    fun downloadFolder() {
+    fun downloadFolder(saveDir: String = "") {
         val folder = actionFile ?: return
         if (!folder.isdir) return
         viewModelScope.launch {
@@ -296,7 +296,8 @@ class C139CloudViewModel(
                             fileName = relPath, // 相对路径：Download/文件夹A/子目录/文件.mp4
                             size = link.size,
                             platform = DownloadPlatform.C139,
-                            headers = downloadHeaders()
+                            headers = downloadHeaders(),
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -320,7 +321,10 @@ class C139CloudViewModel(
 
     /** 下载文件：getDownloadUrl 取 OBS 直链（900s 有效，UA + Referer 即可）后直接入队并切到下载页；
      *  直链仍可在下载页右键复制 */
-    fun downloadFile() {
+    fun downloadFile() = downloadFileTo("")
+
+    /** 下载到指定目录：单次覆盖保存目录，不改「设置 → 储存目录」的全局设置 */
+    fun downloadFileTo(saveDir: String) {
         val file = actionFile ?: return
         viewModelScope.launch {
             isOperating = true
@@ -334,6 +338,7 @@ class C139CloudViewModel(
                     fileName = fileName,
                     size = link.size,
                     platform = DownloadPlatform.C139,
+                    saveDir = saveDir,
                     headers = downloadHeaders()
                 )
                 cloudMessage = "已加入下载：$fileName"
@@ -447,7 +452,7 @@ class C139CloudViewModel(
     // ---------- 批量操作 ----------
 
     /** 批量下载（不切页；选中文件夹时递归下载整个文件夹并保持目录结构） */
-    fun downloadSelected() {
+    fun downloadSelected(saveDir: String = "") {
         val files = _selected.toList()
         if (files.isEmpty()) return
         viewModelScope.launch {

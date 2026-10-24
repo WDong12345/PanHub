@@ -35,15 +35,22 @@ class UCResolveRepository(private val api: UCApi) : ShareResolveRepository {
     override suspend fun listFiles(session: ShareSession, dirFid: String, cookie: String): Result<List<ShareFile>> =
         runCatching {
             // 必须用 transfer_share/detail（带 stoken），返回的 share_fid_token 与 stoken 绑定
-            val all = mutableListOf<ShareFile>()
+            // 按 fid 去重翻页：不能只靠「本页是否满 50」判断结束（服务端可能截断单页大小）
+            val all = LinkedHashMap<String, ShareFile>()
             var page = 1
-            do {
+            while (page <= 200) {
                 val batch = api.getTransferShareFiles(session.shareId, session.stoken, dirFid, cookie, page, 50)
                     ?: throw IllegalStateException("未获取到文件列表")
-                all += batch
+                if (batch.isEmpty()) break
+                val before = all.size
+                for (file in batch) {
+                    val key = file.fid.ifBlank { "${file.pdirFid}/${file.fname}" }
+                    all.putIfAbsent(key, file)
+                }
+                if (all.size == before) break
                 page++
-            } while (batch.size == 50 && page <= 100)
-            all
+            }
+            all.values.toList()
         }.fold(
             onSuccess = { Result.success(it) },
             onFailure = { Result.failure(it) }

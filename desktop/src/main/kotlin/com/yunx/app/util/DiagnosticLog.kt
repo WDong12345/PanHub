@@ -138,10 +138,6 @@ object DiagnosticLog {
     /** 日志目录（导出 zip 与「诊断日志」入口共用） */
     fun dirOf(): File = dir ?: resolveDir()
 
-    /** 目录里是否已经有诊断日志（决定「导出诊断日志」入口是否可点） */
-    fun hasLogs(): Boolean =
-        dirOf().listFiles()?.any { it.isFile && it.name.endsWith(".log") } == true
-
     /** 把队列里的日志写完并 flush（导出前必须调，否则最新几行还在内存里） */
     fun flush(timeoutMs: Long = 2000L) {
         val deadline = System.currentTimeMillis() + timeoutMs

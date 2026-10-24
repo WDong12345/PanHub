@@ -38,6 +38,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Button
@@ -76,6 +77,7 @@ import com.yunx.app.data.network.model.ShareInfo
 import com.yunx.app.ui.components.DirTreePanel
 import com.yunx.app.ui.components.FadeAlertDialog
 import com.yunx.app.ui.components.ScrollToTopButton
+import com.yunx.app.ui.components.rememberDownloadDirPicker
 import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
 import com.yunx.app.ui.resolve.BackToParentItem
@@ -112,6 +114,7 @@ fun LanzouCloudScreen(
     var showRename by remember { mutableStateOf(false) }
     var showMove by remember { mutableStateOf(false) }
     var showShare by remember { mutableStateOf(false) }
+    val pickDownloadDir = rememberDownloadDirPicker()
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showCreateFolder by remember { mutableStateOf(false) }
 
@@ -378,6 +381,9 @@ fun LanzouCloudScreen(
                                 MultiSelectAction("下载", Icons.Outlined.Download, MaterialTheme.colorScheme.primary) {
                                     viewModel.downloadSelected()
                                 },
+                                MultiSelectAction("下载到…", Icons.Outlined.FolderOpen, MaterialTheme.colorScheme.primary) {
+                                    pickDownloadDir { viewModel.downloadSelected(it) }
+                                },
                                 MultiSelectAction("分享", Icons.Outlined.Share, MaterialTheme.colorScheme.primary) {
                                     showShare = true
                                 },
@@ -404,9 +410,21 @@ fun LanzouCloudScreen(
                 showActionSheet = false
                 viewModel.downloadFile()
             },
+            onDownloadTo = {
+                pickDownloadDir { dir ->
+                    showActionSheet = false
+                    viewModel.downloadFileTo(dir)
+                }
+            },
             onDownloadFolder = {
                 showActionSheet = false
                 viewModel.downloadFolder()
+            },
+            onDownloadFolderTo = {
+                pickDownloadDir { dir ->
+                    showActionSheet = false
+                    viewModel.downloadFolder(dir)
+                }
             },
             onRename = {
                 showActionSheet = false
@@ -532,7 +550,9 @@ fun LanzouCloudScreen(
 private fun LanzouActionSheet(
     file: ShareFile,
     onDownload: () -> Unit,
+    onDownloadTo: () -> Unit,
     onDownloadFolder: (() -> Unit)? = null,
+    onDownloadFolderTo: (() -> Unit)? = null,
     onRename: () -> Unit,
     onMove: () -> Unit,
     onShare: () -> Unit,
@@ -579,8 +599,14 @@ private fun LanzouActionSheet(
             Spacer(modifier = Modifier.height(8.dp))
             if (!file.isdir) {
                 LanzouActionItem(Icons.Outlined.Download, "下载", "使用内置下载功能保存到本机", MaterialTheme.colorScheme.primary, onDownload)
-            } else if (onDownloadFolder != null) {
-                LanzouActionItem(Icons.Outlined.Download, "下载文件夹", "递归下载整个文件夹，保持目录结构", MaterialTheme.colorScheme.primary, onDownloadFolder)
+                LanzouActionItem(Icons.Outlined.FolderOpen, "下载到…", "选择本次保存的文件夹（不改全局设置）", MaterialTheme.colorScheme.primary, onDownloadTo)
+            } else {
+                if (onDownloadFolder != null) {
+                    LanzouActionItem(Icons.Outlined.Download, "下载文件夹", "递归下载整个文件夹，保持目录结构", MaterialTheme.colorScheme.primary, onDownloadFolder)
+                }
+                if (onDownloadFolderTo != null) {
+                    LanzouActionItem(Icons.Outlined.FolderOpen, "下载文件夹到…", "选择本次保存的文件夹（不改全局设置）", MaterialTheme.colorScheme.primary, onDownloadFolderTo)
+                }
             }
             LanzouActionItem(Icons.Outlined.Share, "分享", "生成分享链接（提取码由蓝奏服务端生成）", MaterialTheme.colorScheme.primary, onShare)
             LanzouActionItem(Icons.Outlined.DriveFileMove, "移动到", "移动到网盘的其他目录", MaterialTheme.colorScheme.primary, onMove)

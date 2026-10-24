@@ -25,6 +25,21 @@ class DownloadPathPolicyTest {
     }
 
     @Test
+    fun trailingSlashMeansDirectoryOnly() {
+        // "文件夹A/" = 只给了目录、没给文件名：最后一段是目录名，不能当文件名
+        val path = DownloadPathPolicy.sanitize("folderA/", "fallback")
+        assertEquals("folderA", path?.relativeDirectory)
+        assertEquals("fallback", path?.fileName)
+    }
+
+    @Test
+    fun trailingSlashKeepsNestedDirectory() {
+        val path = DownloadPathPolicy.sanitize("folderA/sub/", "fallback")
+        assertEquals("folderA/sub", path?.relativeDirectory)
+        assertEquals("fallback", path?.fileName)
+    }
+
+    @Test
     fun canonicalContainmentRejectsSibling() {
         val base = File("build/policy-test/downloads")
         assertTrue(DownloadPathPolicy.isContained(base, File(base, "folder/file.bin")))

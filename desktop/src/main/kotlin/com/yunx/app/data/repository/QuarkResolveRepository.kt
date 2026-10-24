@@ -30,18 +30,26 @@ class QuarkResolveRepository(private val api: QuarkApi) : ShareResolveRepository
         )
     }
 
-    /** 获取指定目录下的文件列表 */
+    /** 获取指定目录下的文件列表（自动翻页取全量；服务端单页可能只返回 50 项） */
     override suspend fun listFiles(session: ShareSession, dirFid: String, cookie: String): Result<List<ShareFile>> =
         runCatching {
-            val all = mutableListOf<ShareFile>()
+            // 按 fid 去重：服务端截断单页大小（常见为 50）时，不能靠「本页是否满 100」判断结束
+            val all = LinkedHashMap<String, ShareFile>()
             var page = 1
-            do {
-                val batch = api.getShareFiles(session.shareId, session.stoken, dirFid, cookie, page, 100)
+            while (page <= MAX_PAGES) {
+                val batch = api.getShareFiles(session.shareId, session.stoken, dirFid, cookie, page, PAGE_SIZE)
                     ?: throw IllegalStateException("未获取到文件列表")
-                all += batch
+                if (batch.isEmpty()) break
+                val before = all.size
+                for (file in batch) {
+                    val key = file.fid.ifBlank { "${file.pdirFid}/${file.fname}" }
+                    all.putIfAbsent(key, file)
+                }
+                // 整页没有新条目：已到尽头（或服务端忽略了页码，避免死循环）
+                if (all.size == before) break
                 page++
-            } while (batch.size == 100 && page <= 100)
-            all
+            }
+            all.values.toList()
         }.fold(
             onSuccess = { Result.success(it) },
             onFailure = { Result.failure(it) }
@@ -244,4 +252,12 @@ class QuarkResolveRepository(private val api: QuarkApi) : ShareResolveRepository
         api.deleteFiles(leftovers.map { it.fid }, cookie) ?: return 0
         leftovers.size
     }.getOrDefault(0)
+
+    private companion object {
+        /** 分享列表单页条数（服务端可能截到 50，因此翻页逻辑不按本页条数判断结束） */
+        const val PAGE_SIZE = 50
+
+        /** 翻页安全上限（50 × 200 = 1 万项），防止异常响应导致死循环 */
+        const val MAX_PAGES = 200
+    }
 }

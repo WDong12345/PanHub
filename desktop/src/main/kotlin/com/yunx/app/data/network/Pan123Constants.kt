@@ -113,12 +113,4 @@ object Pan123Constants {
 
     /** 永久分享的过期时间（文档 §5.10：永久=2099-12-12T08:00:00+08:00） */
     const val EXPIRATION_FOREVER = "2099-12-12T08:00:00+08:00"
-
-    /** 生成 32 位十六进制 loginuuid（文档 §3.2：设备标识，不参与签名，可固定复用） */
-    fun newLoginUuid(): String {
-        val chars = "0123456789abcdef"
-        return buildString {
-            repeat(32) { append(chars.random()) }
-        }
-    }
 }

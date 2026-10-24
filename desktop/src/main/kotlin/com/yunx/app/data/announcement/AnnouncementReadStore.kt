@@ -37,8 +37,6 @@ class AnnouncementReadStore {
     /** 已读 id 集合（供 Compose 观察；写入后立即更新） */
     val readIds: StateFlow<Set<String>> = _readIds.asStateFlow()
 
-    fun isRead(id: String): Boolean = id in _readIds.value
-
     /** 标记一条公告已读；已读过则直接返回 */
     fun markRead(id: String) {
         val trimmed = id.trim()

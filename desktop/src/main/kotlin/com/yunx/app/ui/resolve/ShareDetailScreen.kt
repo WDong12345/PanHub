@@ -70,6 +70,7 @@ import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareSession
 import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.ui.components.ScrollToTopButton
+import com.yunx.app.ui.components.rememberDownloadDirPicker
 import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
 import com.yunx.app.ui.screens.AddToBookmarkDialog
@@ -160,6 +161,7 @@ fun ShareDetailScreen(
     BackHandler { onBack() }
     // 文件列表滚动状态（返回顶部按钮用）
     val listState = rememberLazyListState()
+    val pickDownloadDir = rememberDownloadDirPicker()
     // 多选模式：底部批量操作栏 + 处理中弹窗
     // 内容抽成 lambda：仅 GitHub 平台包 PullToRefreshBox 下拉刷新，非 GitHub 路径原样渲染
     val listContent: @Composable () -> Unit = {
@@ -368,6 +370,19 @@ fun ShareDetailScreen(
                                 showBaiduLimitDialog = true
                             } else {
                                 viewModel.batchDownload()
+                            }
+                        }
+                    )
+                    add(
+                        MultiSelectAction("下载到…", Icons.Outlined.FolderOpen, MaterialTheme.colorScheme.primary) {
+                            pickDownloadDir { dir ->
+                                val hasBig = viewModel.selected.any { it.fsize > BAIDU_LIMIT_BYTES }
+                                if (viewModel.isBaidu && !baiduLimitDismissed && hasBig) {
+                                    pendingBaiduAction = { viewModel.batchDownload(dir) }
+                                    showBaiduLimitDialog = true
+                                } else {
+                                    viewModel.batchDownload(dir)
+                                }
                             }
                         }
                     )

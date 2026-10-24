@@ -26,12 +26,23 @@ class GuangYaAccountViewModel(
             initialValue = null
         )
 
+    /**
+     * 「添加账号」标记：网盘页账号弹窗点「添加账号」时置位，登录页关闭时清掉。
+     * 置位后这一次登录会落成新的账号行，而不是覆盖当前主账号（见 resolveAccountSlot）。
+     */
+    private var addNewAccount = false
+
+    fun beginAddAccount() { addNewAccount = true }
+
+    fun cancelAddAccount() { addNewAccount = false }
+
     /** 账号密码登录；返回 (是否成功, 提示文案)。 */
     suspend fun login(account: String, password: String): Pair<Boolean, String> = try {
         if (account.isBlank() || password.isBlank()) {
             false to "请输入光鸭账号和密码"
         } else {
-            repository.login(account, password)
+            val result = repository.login(account, password, newAccount = addNewAccount)
+            if (result.isSuccess) addNewAccount = false
             true to "登录成功"
         }
     } catch (e: Exception) {
@@ -70,7 +81,14 @@ class GuangYaAccountViewModel(
         } else if (code.isBlank()) {
             false to "请输入验证码"
         } else {
-            repository.smsLogin(phoneNumber, verificationId, code, isUser)
+            val result = repository.smsLogin(
+                phoneNumber,
+                verificationId,
+                code,
+                isUser,
+                newAccount = addNewAccount
+            )
+            if (result.isSuccess) addNewAccount = false
             true to "登录成功"
         }
     } catch (e: Exception) {

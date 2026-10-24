@@ -127,44 +127,6 @@ object C139Constants {
     /** 快速登录必须同时存在的关键字段（路径 A，§3.5.3） */
     private val REQUIRED_FAST_KEYS = setOf("Os_SSo_Sid", "RMKEY")
 
-    /** 尽量保留的字段（§3.5.3 推荐 + 网页版实际字段，按重要性排序） */
-    private val KEEP_KEYS = setOf(
-        // 路径 A：fast login 核心
-        "Os_SSo_Sid", "RMKEY", "UserData", "Login_UserNumber",
-        "_139_index_isLoginType", "UUIDToken", "JSESSIONID",
-        "areaCode8011", "provCode8011",
-        // 路径 B：网页版直接给出的登录态（authorization 可直接作为请求头）
-        "authorization", "auth_token", "token", "ud_id",
-        // 账号信息
-        "ORCHES-I-ACCOUNT-SIMPLIFY", "ORCHES-I-ACCOUNT-ENCRYPT", "nation_code",
-        // 其他会话/埋点
-        "platform", "cutover_status", "isUserDomainError", "a_k", "skey", "WT_FPC",
-        "hecaiyun_stay_url", "hecaiyun_stay_time",
-        "hecaiyundata2021jssdkcross", "sajssdk_2015_cross_new_user"
-    )
-
-    /**
-     * 从 CookieManager 提取 139 登录态 Cookie：
-     * mail.10086.cn 优先，yun.139.com 兜底，只收 KEEP_KEYS 中的字段，拼成 "k=v; ..."。
-     * @param getCookie CookieManager.getCookie(domain) 的适配（便于测试）
-     */
-    fun extractCookies(getCookie: (String) -> String?): String {
-        val out = linkedMapOf<String, String>()
-        val domains = listOf(COOKIE_DOMAIN, COOKIE_DOMAIN_BACKUP)
-        for (domain in domains) {
-            val raw = getCookie(domain) ?: continue
-            for (kv in raw.split(";")) {
-                val kv2 = kv.trim()
-                val eq = kv2.indexOf('=')
-                if (eq <= 0) continue
-                val k = kv2.substring(0, eq)
-                val v = kv2.substring(eq + 1)
-                if (k in KEEP_KEYS && k !in out) out[k] = v
-            }
-        }
-        return out.entries.joinToString("; ") { "${it.key}=${it.value}" }
-    }
-
     /**
      * 关键字段是否齐全（两种形式任一成立即视为有效登录态）：
      *  - 路径 A：Os_SSo_Sid + RMKEY 同时存在且非空；

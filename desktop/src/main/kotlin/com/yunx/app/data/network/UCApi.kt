@@ -65,8 +65,11 @@ class UCApi(
     /**
      * Cookie 回写接收器（推荐由 UCAccountRepository 注入并落库）：
      * 每次响应把 Set-Cookie 合并后的最新 Cookie 回调，保持 __puus/__pus 始终新鲜。
+     *
+     * ★ 回调同时带上「本次请求用的那份 Cookie」：多账号下载（实验性）会用**别的账号**取链，
+     *   只有按请求 Cookie 找到对应那一行回写，才不会把别的账号的 __puus 混进主账号那一行。
      */
-    var cookieSink: ((String) -> Unit)? = null
+    var cookieSink: ((merged: String, requestCookie: String) -> Unit)? = null
 
     /**
      * 游客态令牌 `__pugs`（未登录取链响应 Set-Cookie 下发，3 小时有效）。
@@ -348,7 +351,7 @@ class UCApi(
         runCatching {
             client.newCall(request).execute().use { resp ->
                 val merged = UCCookieUtil.mergeFromSetCookies(cookie, resp.headers("Set-Cookie"))
-                if (merged != cookie) cookieSink?.invoke(merged)
+                if (merged != cookie) cookieSink?.invoke(merged, cookie)
                 merged
             }
         }.getOrNull()
@@ -703,6 +706,37 @@ suspend fun getDownloadLink(fid: String, cookie: String): DownloadLink? = withCo
         }
     }
 
+    /**
+     * 拉取**整个目录**的云盘文件列表（自动翻页）。
+     * 与 [QuarkApi.listAllCloudFiles] 同理：单页被服务端截断时，只取一页会漏掉 50 项之后的内容。
+     */
+    suspend fun listAllCloudFiles(
+        pdirFid: String,
+        cookie: String,
+        pageSize: Int = 50,
+        maxPages: Int = 200
+    ): List<ShareFile>? {
+        val first = listCloudFiles(pdirFid, cookie, page = 1, size = pageSize) ?: return null
+        val merged = LinkedHashMap<String, ShareFile>()
+        fun merge(batch: List<ShareFile>): Int {
+            var added = 0
+            for (file in batch) {
+                val key = file.fid.ifBlank { "${file.pdirFid}/${file.fname}" }
+                if (merged.putIfAbsent(key, file) == null) added++
+            }
+            return added
+        }
+        merge(first)
+        var page = 2
+        while (first.size >= pageSize && page <= maxPages) {
+            val batch = listCloudFiles(pdirFid, cookie, page = page, size = pageSize) ?: break
+            if (batch.isEmpty()) break
+            if (merge(batch) == 0) break
+            page++
+        }
+        return merged.values.toList()
+    }
+
     /** 重命名（抓包：POST file/rename） */
     suspend fun renameFile(fid: String, newName: String, cookie: String): Boolean =
         withContext(Dispatchers.IO) {
@@ -836,6 +870,6 @@ suspend fun getDownloadLink(fid: String, cookie: String): DownloadLink? = withCo
         val original = request.header("Cookie").orEmpty()
         if (original.isBlank()) return
         val merged = UCCookieUtil.mergeFromSetCookies(original, setCookies)
-        if (merged != original) cookieSink?.invoke(merged)
+        if (merged != original) cookieSink?.invoke(merged, original)
     }
 }

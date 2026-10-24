@@ -69,6 +69,29 @@ object DesktopActions {
     }
 
     /**
+     * 把主窗口拉到前台（托盘「显示主窗口」、剪贴板弹窗点「打开」共用）。
+     *
+     * ★ Windows 上必须做两件事，少一件就会出现「点了打开但窗口没到前台」：
+     *   1. **先还原**：窗口可能已**最小化到任务栏**（extendedState 含 ICONIFIED 位），
+     *      此时 toFront() 对它是无效的 —— 必须先把状态改回 NORMAL；
+     *   2. **再置顶置前**：toFront() 单独调用不一定能夺取前台焦点，用 alwaysOnTop 瞬时切换强制置顶。
+     */
+    fun bringWindowToFront(window: Frame?) {
+        val w = window ?: return
+        runCatching {
+            w.isVisible = true
+            if (w.extendedState and Frame.ICONIFIED != 0) {
+                w.extendedState = Frame.NORMAL
+            }
+            val wasOnTop = w.isAlwaysOnTop
+            w.isAlwaysOnTop = true
+            w.toFront()
+            w.requestFocus()
+            w.isAlwaysOnTop = wasOnTop
+        }
+    }
+
+    /**
      * 重启应用：延迟 2 秒后拉起新的实例（给本进程留出退出的时间，避免两个实例同时抢数据库/缓存），
      * 返回是否成功发起。调用方应在返回 true 后立即退出本进程。
      *

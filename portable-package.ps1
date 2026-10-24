@@ -152,10 +152,11 @@ if ($skikoRuntimeJar) {
     throw "skiko-awt-runtime-windows-x64 jar not found in $libs"
 }
 
-# ---- [2c/5] 裁剪 JCEF 语言包（只留 en-US / en-GB / zh-CN / zh-TW）----
-# JCEF 原生包是 jar 内嵌的一个 tar.gz。CEF 在 Windows 上 locale 为空时回退 en-US；
-# 应用为中文界面，其余语言包无用。libcef.dll / jcef_helper.exe / icudtl.dat /
-# swiftshader/ / resources.pak / chrome_*.pak 等一律不动。
+# ---- [2c/5] 裁剪 JCEF 语言包（只留 zh-CN）----
+# JCEF 原生包是 jar 内嵌的一个 tar.gz。应用界面与内置浏览器 UI 固定简体中文
+# （JcefHolder 显式设置 CefSettings.locale = "zh-CN"），其余语言包不会被加载。
+# libcef.dll / jcef_helper.exe / icudtl.dat / swiftshader/ / resources.pak /
+# chrome_*.pak 等一律不动。
 Write-Host ""
 Write-Host "[2c/5] Trimming JCEF locale packs..." -ForegroundColor Cyan
 $jcefJar = Get-ChildItem $libs -Filter "jcef-natives-windows-amd64-*.jar" | Select-Object -First 1 -ExpandProperty FullName
@@ -177,7 +178,7 @@ $jcefExtract = Join-Path $jcefWork "natives"
 New-Item -ItemType Directory -Force -Path $jcefExtract | Out-Null
 & tar -xzf $tarOrig -C $jcefExtract
 if ($LASTEXITCODE -ne 0) { throw "tar extract failed ($LASTEXITCODE)" }
-$keepLocales = @("en-US", "en-GB", "zh-CN", "zh-TW")
+$keepLocales = @("zh-CN")
 $localeDir = Join-Path $jcefExtract "locales"
 $removedLocales = 0
 Get-ChildItem $localeDir -Filter *.pak | Where-Object { $keepLocales -notcontains $_.BaseName } | ForEach-Object {

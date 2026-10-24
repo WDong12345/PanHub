@@ -83,11 +83,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.yunx.app.data.db.DownloadTaskEntity
+import com.yunx.app.data.download.DownloadGrouping
 import com.yunx.app.data.download.DownloadSaver
 import com.yunx.app.data.download.DownloadStats
 import com.yunx.app.data.download.MagnetLink
 import com.yunx.app.ui.SnackbarController
+import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.ui.components.FadeAlertDialog
+import com.yunx.app.ui.components.rememberDownloadDirPicker
 import com.yunx.app.ui.theme.ThemeController
 import com.yunx.app.ui.viewmodel.DownloadViewModel
 import com.yunx.app.util.DesktopActions
@@ -104,6 +107,7 @@ fun DownloadScreen(
 ) {
     val tasks by viewModel.tasks.collectAsState()
     val stats by viewModel.stats.collectAsState()
+    val settingsRepo = remember { SettingsRepository() }
     var showAddDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<DownloadTaskEntity?>(null) }
     // 文件夹组批量删除：先弹确认框再执行
@@ -169,9 +173,12 @@ fun DownloadScreen(
                 ) {
                     // 根目录任务（无相对路径）单独显示
                     val rootTasks = tasks.filter { !it.fileName.contains('/') }
-                    // 文件夹下载任务：按「顶级目录」分组（整个文件夹归为一组，内部子文件夹不拆开）
+                    // 文件夹下载任务：按「保存根目录 + 顶级目录」分组。
+                    // 只看文件夹名会把“同一个文件夹下载到两个不同位置”的任务错误合并，
+                    // 展开后每个文件出现两条记录；Gopeed/内置下载器共用这套分组。
+                    val globalSaveRoot = DownloadSaver.resolveSaveDir(settingsRepo.downloadDirUri).absolutePath
                     val folderGroups = tasks.filter { it.fileName.contains('/') }
-                        .groupBy { it.fileName.substringBefore('/') }
+                        .groupBy { DownloadGrouping.groupKey(it, globalSaveRoot) }
 
                     items(rootTasks, key = { it.id }) { task ->
                         DownloadTaskCard(
@@ -186,11 +193,14 @@ fun DownloadScreen(
                         )
                     }
 
-                    folderGroups.forEach { (folder, groupTasks) ->
-                        item(key = "folder_$folder") {
+                    folderGroups.forEach { (groupKey, groupTasks) ->
+                        val folder = groupKey.second
+                        val saveRoot = DownloadGrouping.folderSaveRoot(groupTasks.first(), globalSaveRoot)
+                        item(key = "folder_${groupKey.first}_$folder") {
                             FolderDownloadGroup(
                                 modifier = Modifier.animateItem(),
                                 folder = folder,
+                                saveRoot = saveRoot,
                                 tasks = groupTasks,
                                 stats = stats,
                                 onPause = { viewModel.pause(it) },
@@ -224,9 +234,9 @@ fun DownloadScreen(
     if (showAddDialog) {
         AddDownloadDialog(
             onDismiss = { showAddDialog = false },
-            onConfirm = { url, name ->
+            onConfirm = { url, name, saveDir ->
                 showAddDialog = false
-                viewModel.enqueue(url, name)
+                viewModel.enqueue(url, name, saveDir = saveDir)
             }
         )
     }
@@ -509,6 +519,8 @@ private fun EmptyDownloadState(modifier: Modifier = Modifier) {
 private fun FolderDownloadGroup(
     modifier: Modifier = Modifier,
     folder: String,
+    /** 该组的保存根目录（用于区分“同名文件夹下载到不同位置”的多组任务） */
+    saveRoot: String,
     tasks: List<DownloadTaskEntity>,
     stats: Map<Long, DownloadStats>,
     onPause: (Long) -> Unit,
@@ -525,7 +537,8 @@ private fun FolderDownloadGroup(
 ) {
     // ★ 用 rememberSaveable（而非 remember）：切到别的 Tab 再切回来时，
     //   下载页组合会被重建，remember 会让折叠状态复位成「展开」。
-    var expanded by rememberSaveable(folder) { mutableStateOf(true) }
+    // ★ 折叠状态按「保存根目录 + 文件夹名」分别保存：同名文件夹下载到不同位置时互不影响
+    var expanded by rememberSaveable(folder, saveRoot) { mutableStateOf(true) }
     val completed = tasks.count { it.status == DownloadTaskEntity.STATUS_COMPLETED }
     val totalSize = tasks.sumOf { it.totalSize }
     // 聚合显示钳制：任何单项竞态残留都不会让"已下载 > 总大小"
@@ -580,6 +593,14 @@ private fun FolderDownloadGroup(
                         text = "${completed}/${tasks.size} 个文件 · ${formatSize(downloaded)} / ${formatSize(totalSize)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "保存到：${saveRoot.ifBlank { "默认下载目录" }}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 // 总体进度徽标（有子任务在合并分片时显示"合并中"，避免停在 100% 像卡死）
@@ -737,9 +758,10 @@ private fun DownloadSubTaskRow(
     // 合并阶段进度（-1 = 不在合并）：合并时下载早就 100% 了，进度条改用合并百分比，
     // 否则大文件会一直停在 100% 像卡死
     val mergePercent = stats?.mergePercent ?: -1
-    val merging = mergePercent >= 0
+    val verifying = stats?.verifying == true
+    val merging = mergePercent >= 0 && !verifying
     val fraction = when {
-        merging -> mergePercent / 100f
+        mergePercent >= 0 -> mergePercent / 100f
         task.totalSize > 0 -> (task.downloadedSize.toFloat() / task.totalSize).coerceIn(0f, 1f)
         else -> 0f
     }
@@ -796,6 +818,7 @@ private fun DownloadSubTaskRow(
                     )
                     Text(
                         text = when {
+                            verifying -> "校验中 · $mergePercent%"
                             merging -> "合并中 · $mergePercent%"
                             isDownloading && stats != null && stats.speed > 0 ->
                                 "${DownloadTaskEntity.statusText(task.status)} · ${formatSpeed(stats.speed)}"
@@ -916,9 +939,10 @@ private fun DownloadTaskCard(
         task.status == DownloadTaskEntity.STATUS_PENDING
     // 合并阶段进度（-1 = 不在合并）：合并时下载早就 100% 了，界面改显示合并百分比
     val mergePercent = stats?.mergePercent ?: -1
-    val merging = mergePercent >= 0
+    val verifying = stats?.verifying == true
+    val merging = mergePercent >= 0 && !verifying
     val fraction = when {
-        merging -> mergePercent / 100f
+        mergePercent >= 0 -> mergePercent / 100f
         task.totalSize > 0 -> (task.downloadedSize.toFloat() / task.totalSize).coerceIn(0f, 1f)
         else -> 0f
     }
@@ -963,7 +987,11 @@ private fun DownloadTaskCard(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = if (merging) "合并中 · $mergePercent%" else taskStatusLine(task),
+                        text = when {
+                            verifying -> "校验中 · $mergePercent%"
+                            merging -> "合并中 · $mergePercent%"
+                            else -> taskStatusLine(task)
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1054,6 +1082,8 @@ private fun DownloadTaskCard(
                         } else {
                             formatSize(task.totalSize)
                         }
+                    } else if (verifying) {
+                        "正在校验直写文件 · $mergePercent% · ${formatSize(task.totalSize)}"
                     } else if (merging) {
                         // 合并阶段：底部不要再显示"已下载 100%"，明确告知正在合并
                         "正在合并分片 · $mergePercent% · ${formatSize(task.totalSize)}"
@@ -1162,10 +1192,17 @@ private fun formatRemain(millis: Long): String {
 @Composable
 private fun AddDownloadDialog(
     onDismiss: () -> Unit,
-    onConfirm: (url: String, name: String) -> Unit
+    onConfirm: (url: String, name: String, saveDir: String) -> Unit
 ) {
     var url by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
+    var saveDir by remember { mutableStateOf("") }
+    val pickSaveDir = rememberDownloadDirPicker()
+    val defaultDir = remember {
+        DownloadSaver.resolveSaveDir(
+            com.yunx.app.data.prefs.SettingsRepository().downloadDirUri
+        ).absolutePath
+    }
     val isMagnet = MagnetLink.isMagnet(url)
 
     AlertDialog(
@@ -1173,16 +1210,19 @@ private fun AddDownloadDialog(
         title = { Text("添加下载任务") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    // 自定义保存目录在「设置 → 储存目录」里改，这里如实显示当前生效的位置
-                    text = "下载文件将保存到 ${
-                        DownloadSaver.resolveSaveDir(
-                            com.yunx.app.data.prefs.SettingsRepository().downloadDirUri
-                        ).absolutePath
-                    } 目录",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "保存到：${saveDir.ifBlank { "$defaultDir（默认）" }}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    TextButton(onClick = { pickSaveDir { saveDir = it } }) {
+                        Text(if (saveDir.isBlank()) "选择目录" else "更改")
+                    }
+                }
                 OutlinedTextField(
                     value = url,
                     onValueChange = {
@@ -1219,7 +1259,7 @@ private fun AddDownloadDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(url.trim(), name.trim()) },
+                onClick = { onConfirm(url.trim(), name.trim(), saveDir) },
                 // 磁力允许留空文件名：真正的名字要等引擎拿到元数据（DownloadManager 会自己兜底）
                 enabled = url.isNotBlank() && (name.isNotBlank() || isMagnet)
             ) { Text("开始下载") }

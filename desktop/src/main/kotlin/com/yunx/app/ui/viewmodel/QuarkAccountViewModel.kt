@@ -26,9 +26,22 @@ class QuarkAccountViewModel(
             initialValue = null
         )
 
+    /**
+     * 「添加账号」标记：网盘页账号弹窗点「添加账号」时置位，登录页关闭时清掉。
+     * 置位后这一次登录会落成新的账号行，而不是覆盖当前主账号（见 resolveAccountSlot）。
+     */
+    private var addNewAccount = false
+
+    fun beginAddAccount() { addNewAccount = true }
+
+    fun cancelAddAccount() { addNewAccount = false }
+
     /** 保存夸克 Cookie；返回是否保存成功 */
-    suspend fun saveQuarkAccount(cookie: String): Boolean =
-        repository.saveQuarkAccount(cookie)
+    suspend fun saveQuarkAccount(cookie: String): Boolean {
+        val saved = repository.saveQuarkAccount(cookie, newAccount = addNewAccount)
+        if (saved) addNewAccount = false
+        return saved
+    }
 
     /** 退出登录：清除本地 Cookie */
     fun logout() {

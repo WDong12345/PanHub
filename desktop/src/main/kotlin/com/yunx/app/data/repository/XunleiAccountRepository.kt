@@ -2,6 +2,8 @@ package com.yunx.app.data.repository
 
 import com.yunx.app.data.db.XunleiAccountDao
 import com.yunx.app.data.db.XunleiAccountEntity
+import com.yunx.app.data.db.resolveAccountSlot
+import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.XunleiApi
 import com.yunx.app.data.network.XunleiLoginStep
 import com.yunx.app.data.network.XunleiWebCredential
@@ -19,6 +21,17 @@ class XunleiAccountRepository(
     fun observeAccount(): Flow<XunleiAccountEntity?> = dao.observeAccount()
 
     suspend fun getAccount(): XunleiAccountEntity? = dao.getAccount()
+
+    /** 该平台全部账号（主账号在前）：多账号下载要按 token 反查该账号自己的设备指纹与 captcha */
+    suspend fun getAccounts(): List<XunleiAccountEntity> = dao.getAccounts()
+
+    /**
+     * 该平台全部账号的 access_token（主账号在前）：多账号下载（实验性 C1/C2）轮换取链用。
+     * 取链时 [XunleiResolveRepository] 会用传进去的 token 取该账号自己的设备指纹，
+     * 不能拿主账号的 token 配另一个账号的设备号（迅雷侧会拒）。
+     */
+    suspend fun allCredentials(): List<String> =
+        dao.getAccounts().map { it.accessToken }.filter { it.isNotBlank() }
 
     /** 账号密码登录；返回登录步骤（needSms=true 表示需短信验证，携带 smsCreditKey/smsToken） */
     suspend fun loginWithPassword(
@@ -42,7 +55,8 @@ class XunleiAccountRepository(
         mobile: String,
         smsCode: String,
         creditKey: String,
-        smsToken: String
+        smsToken: String,
+        newAccount: Boolean = false
     ): Boolean {
         val deviceId = XunleiApi.newDeviceId()
         val step = api.smsLogin(mobile, smsCode, creditKey, smsToken, deviceId)
@@ -50,14 +64,17 @@ class XunleiAccountRepository(
         // 换 token 前先 initCaptcha 拿 captcha_token（官方时序：smslogin → captcha/init → signin/token）
         val captchaToken = api.initCaptcha(deviceId, mobile) ?: ""
         val tokens = api.exchangeToken(step.sessionId, deviceId, captchaToken) ?: return false
+        val slot = resolveAccountSlot(DownloadPlatform.XUNLEI, dao.getAccount(), newAccount)
         dao.upsert(
             XunleiAccountEntity(
-                id = "xunlei",
+                id = slot.id,
                 accessToken = tokens.first,
                 refreshToken = tokens.second,
                 deviceId = deviceId,
                 captchaToken = captchaToken,
-                nickname = step.nickname.ifBlank { "迅雷用户" }
+                nickname = step.nickname.ifBlank { "迅雷用户" },
+                isPrimary = slot.isPrimary,
+                remark = slot.remark
             )
         )
         return true
@@ -66,20 +83,24 @@ class XunleiAccountRepository(
     /** 密码登录成功后用 sessionID 换 token 落库 */
     suspend fun finishLogin(
         step: XunleiLoginStep,
-        username: String
+        username: String,
+        newAccount: Boolean = false
     ): Boolean {
         if (step.sessionId.isBlank()) return false
         val deviceId = XunleiApi.newDeviceId()
         val captchaToken = api.initCaptcha(deviceId, username) ?: ""
         val tokens = api.exchangeToken(step.sessionId, deviceId, captchaToken) ?: return false
+        val slot = resolveAccountSlot(DownloadPlatform.XUNLEI, dao.getAccount(), newAccount)
         dao.upsert(
             XunleiAccountEntity(
-                id = "xunlei",
+                id = slot.id,
                 accessToken = tokens.first,
                 refreshToken = tokens.second,
                 deviceId = deviceId,
                 captchaToken = captchaToken,
-                nickname = step.nickname.ifBlank { "迅雷用户" }
+                nickname = step.nickname.ifBlank { "迅雷用户" },
+                isPrimary = slot.isPrimary,
+                remark = slot.remark
             )
         )
         return true
@@ -99,20 +120,23 @@ class XunleiAccountRepository(
      * （因此记下 [XunleiWebCredential.AUTH_TYPE]）。返回值直接决定登录页的自动检测是「登录成功」
      * 还是「继续等」——校验不通过（含网络异常）一律 false，绝不把中间态当登录成功。
      */
-    suspend fun saveWebCredential(raw: String): Boolean {
+    suspend fun saveWebCredential(raw: String, newAccount: Boolean = false): Boolean {
         val tokens = XunleiWebCredential.parse(raw) ?: return false
         // 网页凭据不带设备指纹，取不到时用本机指纹兜底（云盘接口需要一个 X-Device-Id）
         val deviceId = tokens.deviceId.ifBlank { XunleiApi.newDeviceId() }
         if (!api.verifyAccessToken(tokens.accessToken, deviceId, tokens.captchaToken)) return false
+        val slot = resolveAccountSlot(DownloadPlatform.XUNLEI, dao.getAccount(), newAccount)
         dao.upsert(
             XunleiAccountEntity(
-                id = "xunlei",
+                id = slot.id,
                 accessToken = tokens.accessToken,
                 refreshToken = tokens.refreshToken,
                 deviceId = deviceId,
                 captchaToken = tokens.captchaToken,
                 nickname = tokens.nickname.ifBlank { "迅雷用户" },
-                authType = XunleiWebCredential.AUTH_TYPE
+                authType = XunleiWebCredential.AUTH_TYPE,
+                isPrimary = slot.isPrimary,
+                remark = slot.remark
             )
         )
         return true

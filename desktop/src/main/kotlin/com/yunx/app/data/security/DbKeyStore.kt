@@ -196,15 +196,25 @@ object DbKeyStore {
         return SecretKeySpec(bytes, "AES")
     }
 
+    /**
+     * 机器指纹暂时读不到：**属于「暂时不可用」，调用方绝不能据此更换主密钥**。
+     *
+     * ★ 旧实现读不到 MachineGuid 就静默退回「主机名 + 用户名」——那会派生出一把**不同的**密钥，
+     *   偶尔一次读取失败就会让解包报 AEADBadTag，被误判成「密钥彻底损坏」→ 换密钥 → 凭证全丢。
+     *   MachineGuid 在 Windows 上始终存在，读不到只可能是暂时性故障，因此宁可本次失败也不换指纹。
+     */
+    class MachineFingerprintUnavailable(message: String) : IllegalStateException(message)
+
     /** 机器指纹（可读性无关，只求稳定唯一） */
     private fun machineFingerprint(): String = buildString {
         append("yunx-desktop|")
         append(System.getProperty("os.name").orEmpty()).append('|')
         append(System.getProperty("os.arch").orEmpty()).append('|')
-        append(machineGuid() ?: run {
-            Log.w(TAG, "读不到 MachineGuid，退回主机名+用户名（改名后本档密钥会失效）")
-            "${System.getenv("COMPUTERNAME").orEmpty()}-${System.getProperty("user.name").orEmpty()}"
-        })
+        append(
+            machineGuid() ?: throw MachineFingerprintUnavailable(
+                "暂时读不到 MachineGuid，本次不做密钥解包（下次会重试）"
+            )
+        )
     }
 
     /** Windows MachineGuid（HKLM\SOFTWARE\Microsoft\Cryptography），普通用户可读 */

@@ -15,6 +15,8 @@ import java.io.FileInputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.security.MessageDigest
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
@@ -307,6 +309,172 @@ class ChunkDownloader(private val clientProvider: () -> OkHttpClient) {
                 if (preempt?.get() == true) break
                 if (expected >= 0 && written >= expected) break
             }
+        }
+        return written
+    }
+
+    // ---------- 实验性：多线程直写（按偏移写入目标文件） ----------
+
+    /**
+     * 把一个分片直接写到已打开的目标文件 [channel] 的对应偏移（不经过缓存分片文件）。
+     *
+     * 与 [downloadChunk] 的差异：
+     * - 不用 partFile.length() 当进度；本方法内部维护本片已写字节 [written]，
+     *   同一进程内重试/被抢占时从 `start + written` 续传（已写数据保留在原偏移）；
+     * - 进程重启后本片是否完成由上层 `.done` 清单决定，未完成的分片整片重下（覆盖写，安全）；
+     * - 多个 worker 写同一文件的不同区间，`FileChannel.write(buf, position)` 是线程安全的。
+     *
+     * 206 必须与请求区间匹配；200 返回 [ChunkResult.RANGE_IGNORED]，由上层回退单流或缓存模式。
+     */
+    suspend fun downloadRangeToChannel(
+        taskId: Long,
+        url: String,
+        start: Long,
+        end: Long,
+        channel: FileChannel,
+        headers: Map<String, String>,
+        preempt: AtomicBoolean? = null,
+        contentDigest: MessageDigest? = null,
+        onBytes: suspend (Long) -> Unit
+    ): ChunkResult = withContext(DownloadManager.chunkIoDispatcher) {
+        val expected = end - start + 1
+        if (expected <= 0) return@withContext ChunkResult.OK
+        val attempts = CHUNK_RETRIES + RANGE_RETRIES
+        var written = 0L
+        repeat(attempts) { attempt ->
+            if (!isActive) throw CancellationException("下载被取消")
+            if (written >= expected) return@withContext ChunkResult.OK
+            val from = start + written
+            var preempted = false
+            val res = try {
+                doChannelAttempt(
+                    taskId = taskId,
+                    url = url,
+                    from = from,
+                    end = end,
+                    writePosition = start + written,
+                    channel = channel,
+                    headers = headers,
+                    preempt = preempt,
+                    contentDigest = contentDigest
+                ) { delta ->
+                    written += delta
+                    onBytes(delta)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: PreemptedException) {
+                preempt?.set(false)
+                preempted = true
+                null
+            } catch (e: IOException) {
+                if (!isActive) throw CancellationException("下载被取消", e)
+                null
+            }
+            when (res) {
+                ChunkResult.OK -> return@withContext if (written >= expected) ChunkResult.OK else ChunkResult.FAILED
+                ChunkResult.FAILED -> return@withContext ChunkResult.FAILED
+                ChunkResult.RANGE_IGNORED -> return@withContext ChunkResult.RANGE_IGNORED
+                null -> if (!preempted && attempt < attempts - 1) {
+                    delay((500L * (attempt + 1)).coerceAtMost(3000))
+                }
+            }
+        }
+        ChunkResult.FAILED
+    }
+
+    private suspend fun doChannelAttempt(
+        taskId: Long,
+        url: String,
+        from: Long,
+        end: Long,
+        writePosition: Long,
+        channel: FileChannel,
+        headers: Map<String, String>,
+        preempt: AtomicBoolean?,
+        contentDigest: MessageDigest?,
+        onWritten: suspend (Long) -> Unit
+    ): ChunkResult {
+        val request = Request.Builder()
+            .url(url)
+            .header("Range", "bytes=$from-$end")
+            .apply { headers.forEach { (k, v) -> header(k, v) } }
+            .get().build()
+        val call = client.newCall(request)
+        val callSet = activeCalls.getOrPut(taskId) { newCallSet() }
+        callSet.add(call)
+        val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+        try {
+            return call.execute().use { response ->
+                if (response.header("Content-Type").orEmpty().contains("text/html", ignoreCase = true)) {
+                    Log.w(TAG, "downloadRange: task=$taskId 返回 text/html，终止")
+                    return@use ChunkResult.FAILED
+                }
+                when (response.code) {
+                    206 -> {
+                        if (!HttpRangePolicy.matches(response.header("Content-Range"), from, end)) {
+                            Log.w(TAG, "downloadRange: task=$taskId Content-Range 与请求不一致")
+                            return@use ChunkResult.FAILED
+                        }
+                        val body = response.body ?: return@use ChunkResult.FAILED
+                        val expected = end - from + 1
+                        val written = writeSliceToChannel(
+                            body.byteStream(), channel, writePosition, expected, preempt, contentDigest, onWritten
+                        )
+                        if (preempt?.get() == true) throw PreemptedException()
+                        if (written != expected) {
+                            Log.w(TAG, "downloadRange: task=$taskId 分片写入不足 written=$written 预期=$expected")
+                            ChunkResult.FAILED
+                        } else {
+                            ChunkResult.OK
+                        }
+                    }
+                    200 -> {
+                        Log.w(TAG, "downloadRange: task=$taskId Range 请求返回 200")
+                        ChunkResult.RANGE_IGNORED
+                    }
+                    else -> {
+                        Log.w(TAG, "downloadRange: task=$taskId 非预期状态码 ${response.code}")
+                        ChunkResult.FAILED
+                    }
+                }
+            }
+        } finally {
+            callSet.remove(call)
+            activeCalls.computeIfPresent(taskId) { _, set -> if (set.isEmpty()) null else set }
+            cancelHandle?.dispose()
+        }
+    }
+
+    /** 把响应流按绝对偏移写入目标文件；返回本次写入字节数 */
+    private suspend fun writeSliceToChannel(
+        input: java.io.InputStream,
+        channel: FileChannel,
+        position: Long,
+        expected: Long,
+        preempt: AtomicBoolean?,
+        contentDigest: MessageDigest?,
+        onWritten: suspend (Long) -> Unit
+    ): Long {
+        var written = 0L
+        var pos = position
+        val buffer = ByteArray(DownloadTuning.bufferSize)
+        while (true) {
+            val read = input.read(buffer)
+            if (read <= 0) break
+            val allow = min(read.toLong(), expected - written)
+            if (allow <= 0) break
+            val slice = ByteBuffer.wrap(buffer, 0, allow.toInt())
+            while (slice.hasRemaining()) {
+                val n = channel.write(slice, pos)
+                if (n <= 0) throw IOException("FileChannel.write 返回 0")
+                pos += n
+            }
+            contentDigest?.update(buffer, 0, allow.toInt())
+            written += allow
+            onWritten(allow)
+            if (preempt?.get() == true) break
+            if (written >= expected) break
         }
         return written
     }

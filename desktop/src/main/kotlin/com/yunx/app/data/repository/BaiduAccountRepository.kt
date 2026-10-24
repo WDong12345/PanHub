@@ -2,6 +2,8 @@ package com.yunx.app.data.repository
 
 import com.yunx.app.data.db.BaiduAccountDao
 import com.yunx.app.data.db.BaiduAccountEntity
+import com.yunx.app.data.db.resolveAccountSlot
+import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.BaiduApi
 import com.yunx.app.data.network.BaiduConstants
 import com.yunx.app.util.CookieCleaner
@@ -21,6 +23,10 @@ class BaiduAccountRepository(
 
     suspend fun getAccount(): BaiduAccountEntity? = dao.getAccount()
 
+    /** 该平台全部账号可用的凭证（主账号在前）：多账号下载（实验性 C1）轮换取链用 */
+    suspend fun allCredentials(): List<String> =
+        dao.getAccounts().map { it.cookie }.filter { it.isNotBlank() }
+
     /** 退出登录：清理 JCEF Cookie + 清除本地记录 + 清空 bdstoken 缓存 */
     suspend fun logoutBaidu() {
         CookieCleaner.clearCookiesForDomains(listOf("pan.baidu.com", "yun.baidu.com", "baidu.com"))
@@ -32,15 +38,18 @@ class BaiduAccountRepository(
      * 校验 Cookie 有效性（需含 BDUSS）；有效则拉取昵称并落库，返回 true；无效返回 false。
      * 校验通过后清空 bdstoken 缓存，避免旧账号的 bdstoken 跨账号复用导致 errno=-6。
      */
-    suspend fun saveBaiduAccount(cookie: String): Boolean {
+    suspend fun saveBaiduAccount(cookie: String, newAccount: Boolean = false): Boolean {
         if (!BaiduConstants.isValidCookie(cookie)) return false
         api.clearSessionCache()
         val nickname = api.fetchNickname(cookie) ?: "百度用户"
+        val slot = resolveAccountSlot(DownloadPlatform.BAIDU, dao.getAccount(), newAccount)
         dao.upsert(
             BaiduAccountEntity(
-                id = "baidu",
+                id = slot.id,
                 cookie = cookie,
-                nickname = nickname
+                nickname = nickname,
+                isPrimary = slot.isPrimary,
+                remark = slot.remark
             )
         )
         return true

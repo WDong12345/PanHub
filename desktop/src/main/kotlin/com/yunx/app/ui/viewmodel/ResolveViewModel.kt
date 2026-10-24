@@ -16,6 +16,7 @@ import com.yunx.app.data.db.LinkHistoryDao
 import com.yunx.app.data.db.LinkHistoryEntity
 import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.download.DownloadPlatform
+import com.yunx.app.data.download.DownloadSource
 import com.yunx.app.data.network.BaiduConstants
 import com.yunx.app.data.network.C139Constants
 import com.yunx.app.data.network.GitHubApi
@@ -42,6 +43,7 @@ import com.yunx.app.data.update.UpdateChecker
 import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareSession
+import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.data.repository.BaiduAccountRepository
 import com.yunx.app.data.repository.BaiduResolveRepository
 import com.yunx.app.data.repository.C139AccountRepository
@@ -117,11 +119,50 @@ class ResolveViewModel(
      */
     private val noSaveDownloadProvider: () -> Boolean = { true },
     /** 「下载时同时保存到网盘」的默认值提供者（设置页开关，解析页可临时覆盖） */
-    private val saveOnDownloadDefaultProvider: () -> Boolean = { false }
+    private val saveOnDownloadDefaultProvider: () -> Boolean = { false },
+    /**
+     * 多账号下载（实验性 C1）开关：由上层从 SettingsRepository 注入，改设置即时生效。
+     * 开启后批量下载会按文件轮换该网盘的不同账号取链，绕开单账号的并发数 / 限速
+     * （每个文件仍只用一个账号下载），见 [credentialRotation]。
+     */
+    private val multiAccountDownloadProvider: () -> Boolean = { false },
+    /**
+     * 单文件多源分片（实验性 C2）开关：由上层从 SettingsRepository 注入
+     * （工厂侧用 `multiSourceActive()` 判断，已保证 C2 生效时 C1 也开着）。
+     * 开启后同一个文件用多个账号各取一条直链，分片轮流交给不同直链下载，见 [fetchAltLinks]。
+     */
+    private val multiSourceDownloadProvider: () -> Boolean = { false }
 ) : ViewModel() {
+
+    init {
+        // 多账号下载（实验性 C1/C2）：迅雷每次请求都必须用该账号自己的设备指纹与 captcha，
+        // 仓库通过 access_token 反查账号行（桌面端在这里接线，避免改动 MainScreen 的装配）
+        xunleiResolveRepository.accountByTokenProvider = { token ->
+            xunleiAccountRepository.getAccounts().firstOrNull { it.accessToken == token }
+        }
+    }
 
     var uiState by mutableStateOf<ResolveUiState>(ResolveUiState.Idle)
         private set
+
+    var downloadLink by mutableStateOf<DownloadLink?>(null)
+        private set
+
+    /**
+     * 单文件多源分片（实验性 C2）预取的备选直链（直链 + 该账号凭证）。
+     * 与 [downloadLink] 在同一时刻取回、由紧接着的那次 [startDownload] 消费后清空 ——
+     * 直链签名有时效，不能等用户点「下载」时再去取。
+     */
+    private var pendingAltLinks: List<Pair<DownloadLink, String>> = emptyList()
+
+    /** 本次单文件下载的保存目录（空串 = 跟随全局设置）；下载弹窗内可更改 */
+    var pendingSaveDir by mutableStateOf("")
+        private set
+
+    /** 下载弹窗内选择/更改保存目录 */
+    fun chooseDownloadDir(dir: String) {
+        pendingSaveDir = dir
+    }
 
     var downloadError by mutableStateOf<String?>(null)
     private set
@@ -511,10 +552,10 @@ class ResolveViewModel(
     }
 
     /** 批量下载：逐个取直链入队（选中文件夹时递归下载整个文件夹并保持目录结构，全部获取完再统一切到下载页） */
-    fun batchDownload() {
+    fun batchDownload(saveDir: String = "") {
         // GitHub 分支：无需凭证/取链 API，逐文件构造直链入队（代码文件夹递归收集 blob）
         if (currentPlatform == SharePlatform.GITHUB) {
-            batchGitHubDownload()
+            batchGitHubDownload(saveDir)
             return
         }
         val files = _selected.toList()
@@ -554,22 +595,47 @@ class ResolveViewModel(
                     exitMultiSelect()
                     return@launch
                 }
-                // 整批空间预算校验：进入循环前把展开后的所有文件大小一次性求和，只查一次配额。
-                // 仅「下载路径需先转存」的平台（夸克 / 迅雷 / 百度）会占用目标账号空间；
-                // UC / 139 / 123 直接取分享直链、不占空间，无需校验。
-                // 必须在循环外做，错误才不会被循环内的 runCatching 吞掉（否则表现为「少加入了几项」且无提示）
+                // 展开后的整批文件大小（多账号空间判定用；未知大小按 0 处理）
+                val sizes = tasks.map { it.first.fsize }
+                // 仅「下载路径需先转存」的平台会占用目标账号空间；
+                // UC / 139 / 123 等直接取分享直链、不占空间，无需校验。
                 val downloadTransfers = currentPlatform == SharePlatform.QUARK ||
                     currentPlatform == SharePlatform.XUNLEI ||
                     currentPlatform == SharePlatform.BAIDU
-                val batchChecked = if (downloadTransfers && credential.isNotBlank()) {
-                    try {
-                        currentRepo().ensureBatchSpace(tasks.map { it.first.fsize }, quarkCred)
-                    } catch (e: Exception) {
-                        downloadError = e.message ?: "剩余空间不足"
+                // 多账号下载（实验性 C1）：按文件轮换该网盘的不同账号取链（主账号在前）。
+                // 开关关闭 / 只有主账号时这里就是 [quarkCred] 一项，行为与开启前完全一致。
+                var credentialPool = if (credential.isBlank()) emptyList() else credentialRotation(quarkCred)
+                var skippedForSpace = 0
+                var batchChecked = false
+                if (downloadTransfers && credential.isNotBlank() && credentialPool.isNotEmpty()) {
+                    // 逐个账号做整批空间预算：放不下的账号直接跳过、不参与轮换。
+                    // TransferSpaceGuard 只在「确实查到配额且不够」时抛错（查询失败 / 大小未知会放行），
+                    // 所以 isFailure 就代表「这个账号空间不够」。
+                    val usable = mutableListOf<String>()
+                    var firstFailure: Throwable? = null
+                    credentialPool.forEachIndexed { i, cred ->
+                        val checked = runCatching { currentRepo().ensureBatchSpace(sizes, cred) }
+                        if (checked.isSuccess) {
+                            usable += cred
+                            if (i == 0) batchChecked = checked.getOrDefault(false)
+                        } else {
+                            skippedForSpace++
+                            if (firstFailure == null) firstFailure = checked.exceptionOrNull()
+                        }
+                    }
+                    if (usable.isEmpty()) {
+                        // 所有账号都放不下：沿用原来的口径，直接中止并提示
+                        downloadError = firstFailure?.message ?: "剩余空间不足"
                         return@launch
                     }
-                } else false
+                    credentialPool = usable
+                }
+                // 轮换池只剩 1 个可用账号时自然退回单账号（fileCred = credentialPool[0]）
                 var okCount = 0
+                var failCount = 0
+                var firstFailReason: String? = null
+                // 「有多少个账号成功」：真正成功取到过直链的账号集合
+                val successfulCredentials = linkedSetOf<String>()
                 var interrupted = false
                 for ((index, task) in tasks.withIndex()) {
                     // 用户点击「中断」：停止剩余项，已入队的任务保留下载
@@ -580,6 +646,12 @@ class ResolveViewModel(
                     }
                     val (file, relPath) = task
                     batchProgress = "${index + 1}/${tasks.size}"
+                    // 本次文件用哪个账号：按文件序号轮换（取链与下载始终用同一份凭证）
+                    val fileCred = if (credentialPool.isEmpty()) {
+                        quarkCred
+                    } else {
+                        credentialPool[index % credentialPool.size]
+                    }
                     runCatching {
                         // 勾选「同时保存」：批量同样转存后用新 fid 续下（仅夸克显示该勾选、也只有它能续下）
                         if (saveOnDownload && currentPlatform == SharePlatform.QUARK && credential.isNotBlank()) {
@@ -597,17 +669,49 @@ class ResolveViewModel(
                         val linkResult = if (credential.isBlank()) {
                             currentRepo().getGuestShareDownloadLink(s, file)
                         } else {
-                            resolveShareLink(currentRepo(), s, file, quarkCred, batchChecked)
+                            resolveShareLink(currentRepo(), s, file, fileCred, batchChecked)
                         }
-                        linkResult.getOrNull()?.let { link ->
-                            // 文件夹内文件用相对路径（保持目录结构）；根目录文件用取链返回的文件名
-                            enqueueDownload(link, quarkCred, if (relPath.isBlank()) link.filename else relPath)
-                            okCount++
-                        }
+                        // ★ 取链失败必须抛出（而不是 getOrNull() 后什么都不做）：批量下载里静默跳过会
+                        //   表现为「整个文件夹只加入了几个文件，其余像没发生一样」，用户根本不知道是失败了
+                        val link = linkResult.getOrNull()
+                            ?: throw IllegalStateException(linkResult.exceptionOrNull()?.message ?: "未获取到下载直链")
+                        // 文件夹内文件用相对路径（保持目录结构）；根目录文件用取链返回的文件名
+                        enqueueDownload(
+                            link,
+                            fileCred,
+                            if (relPath.isBlank()) link.filename else relPath,
+                            saveDir = saveDir
+                        )
+                        successfulCredentials += fileCred
+                        okCount++
+                    }.onFailure { e ->
+                        // 协程取消不是「失败」：原样抛出去，否则会被记成一条假的失败原因
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        failCount++
+                        val reason = e.message ?: e.javaClass.simpleName
+                        if (firstFailReason == null) firstFailReason = reason
+                        Log.w("YunX-Resolve", "批量下载跳过 ${file.fname}：$reason")
                     }
                 }
                 if (!interrupted) {
-                    downloadError = if (okCount > 0) "已加入 $okCount 个下载任务" else "获取下载链接失败"
+                    // 账号情况：成功参与取链的账号数 + 空间不足被跳过的账号数；
+                    // 只剩一个可用账号时明确提示已退回单账号，避免用户以为多账号没生效
+                    val notes = mutableListOf<String>()
+                    if (credentialPool.size > 1 || skippedForSpace > 0) {
+                        notes += "${successfulCredentials.size} 个账号成功取链"
+                        if (skippedForSpace > 0) notes += "$skippedForSpace 个账号空间不足已跳过"
+                        if (credentialPool.size == 1) notes += "已退回单账号"
+                    }
+                    val note = if (notes.isEmpty()) "" else "（${notes.joinToString("，")}）"
+                    downloadError = when {
+                        failCount == 0 -> if (okCount > 0) {
+                            "已加入 $okCount 个下载任务$note"
+                        } else {
+                            "获取下载链接失败"
+                        }
+                        else -> "已加入 $okCount 个，$failCount 个失败$note" +
+                            (firstFailReason?.let { "；首个失败原因：$it" } ?: "")
+                    }
                     // 全部获取完再一次性切到下载页
                     if (okCount > 0) downloadStarted = true
                 }
@@ -748,6 +852,61 @@ class ResolveViewModel(
         else -> resolveRepository
     }
 
+    /**
+     * 多账号下载（实验性 C1）：本次批量下载可以轮换使用的凭证列表（主账号在前）。
+     *
+     * 10 个平台都已接入：各平台「取链仓库」本来就把凭证作为方法参数（token 型平台内部用
+     * `cookie.ifBlank { tokenProvider() }` 兜底），所以这里只要把同平台所有账号的凭证按主账号优先排好即可。
+     * 关闭开关、平台只有一个账号、或游客链路时返回原来那一条。
+     */
+    private suspend fun credentialRotation(fallback: String): List<String> {
+        if (!multiAccountDownloadProvider()) return listOf(fallback)
+        val credentials = when (currentPlatform) {
+            SharePlatform.QUARK -> accountRepository.allCredentials()
+            SharePlatform.UC -> ucAccountRepository.allCredentials()
+            SharePlatform.XUNLEI -> xunleiAccountRepository.allCredentials()
+            SharePlatform.BAIDU -> baiduAccountRepository.allCredentials()
+            SharePlatform.C139 -> c139AccountRepository.allCredentials()
+            SharePlatform.PAN123 -> pan123AccountRepository.allCredentials()
+            SharePlatform.PAN115 -> pan115AccountRepository.allCredentials()
+            SharePlatform.GUANGYA -> guangyaAccountRepository.allCredentials()
+            SharePlatform.ILANZOU -> ilanzouAccountRepository.allCredentials()
+            SharePlatform.LANZOU -> lanzouAccountRepository.allCredentials()
+            else -> emptyList()
+        }.filter { it.isNotBlank() }
+        return credentials.ifEmpty { listOf(fallback) }
+    }
+
+    /** 单文件多源分片（实验性 C2）支持的平台：其余平台即使开着 C2 也退回单源 */
+    private val multiSourcePlatforms = setOf(
+        SharePlatform.QUARK,
+        SharePlatform.UC,
+        SharePlatform.XUNLEI,
+        SharePlatform.BAIDU
+    )
+
+    /**
+     * 单文件多源分片（实验性 C2）：对同一个文件再用**其他账号**各取一条直链。
+     *
+     * 只在「C2 生效 + 平台受支持 + 确实还有第二个账号」时才返回非空；任一账号取链失败就跳过它
+     * （多源只是提速手段，少一条照样能把文件下完）。
+     * 返回「直链 + 该账号凭证」成对的数据：下载请求头必须按这个凭证配，不能配主账号的。
+     */
+    private suspend fun fetchAltLinks(
+        file: ShareFile,
+        primaryCredential: String
+    ): List<Pair<DownloadLink, String>> {
+        if (!multiSourceDownloadProvider() || currentPlatform !in multiSourcePlatforms) return emptyList()
+        val s = session ?: return emptyList()
+        return credentialRotation(primaryCredential)
+            .filter { it != primaryCredential }
+            .mapNotNull { credential ->
+                runCatching { resolveShareLink(currentRepo(), s, file, credential).getOrNull() }
+                    .getOrNull()
+                    ?.let { link -> link to credential }
+            }
+    }
+
     private fun currentDefaultDirFid(): String = when (currentPlatform) {
         SharePlatform.UC -> UCConstants.DEFAULT_PDIR_FID
         SharePlatform.XUNLEI -> "0"
@@ -790,8 +949,23 @@ class ResolveViewModel(
             currentPlatform == SharePlatform.ILANZOU ||
             currentPlatform == SharePlatform.LANZOU
 
+    /**
+     * 「把原文回填到解析输入框」的请求：解析失败时写入，解析页消费后置空。
+     *
+     * 场景：剪贴板右下角弹窗点「打开」时，链接若**没带提取码**就会解析失败 ——
+     * 回填后用户只需再补一个提取码（不必把链接重新粘贴一次）。
+     */
+    var prefillRequest by mutableStateOf<String?>(null)
+        private set
+
+    fun consumePrefill(): String? = prefillRequest.also { prefillRequest = null }
+
+    /** 最近一次 startResolve 的原文（口令转换之前），失败时原样回填 */
+    private var lastResolveInput: String = ""
+
     /** 开始解析：链接 → token →（密码）→ 根目录列表 */
     fun startResolve(link: String, pwd: String?) {
+        lastResolveInput = link
         currentLink = link
         currentPwd = pwd
         // 写入当前分享链接，供下载入队时兜底填充 task.shareUrl（右键菜单「复制分享链接」用）
@@ -827,6 +1001,7 @@ class ResolveViewModel(
             val parsed = ShareLinkParser.parse(effectiveLink)
             if (parsed == null) {
                 // 两个口令服务都给不出结果时，用更靠后那次（星海）的原因——它对夸克/UC 口令最准
+                prefillRequest = lastResolveInput
                 uiState = ResolveUiState.Error(commandError ?: "无法识别分享链接")
                 return@launch
             }
@@ -852,6 +1027,8 @@ class ResolveViewModel(
                 }
                 .onFailure { e ->
                     val msg = e.message ?: "解析失败"
+                    // 失败（最常见是「链接不带提取码」）→ 把原文回填输入框，用户补个提取码即可重试
+                    prefillRequest = lastResolveInput
                     // 游客模式失败时补一句可执行的引导，而不是只抛服务端原文
                     uiState = ResolveUiState.Error(
                         if (isGuest) "$msg（当前未登录，可到「网盘」页登录${platformName()}后重试）" else msg
@@ -1400,7 +1577,7 @@ class ResolveViewModel(
      * GitHub 批量下载：选中的叶子文件直接入队；代码文件夹（github:code:*）递归 getTree 收集 blob；
      * Releases 文件夹展开为资产；其余（repo 根/账号列表）跳过。全部直链先经镜像前缀转换。
      */
-    private fun batchGitHubDownload() {
+    private fun batchGitHubDownload(saveDir: String = "") {
         val selected = _selected.toList()
         viewModelScope.launch {
             isBatchWorking = true
@@ -1454,7 +1631,8 @@ class ResolveViewModel(
                             size = t.third,
                             platform = DownloadPlatform.GITHUB,
                             // 镜像挂掉时回退原始直连（t.first 为未镜像的 GitHub 直链）
-                            fallbackUrl = t.first
+                            fallbackUrl = t.first,
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -1708,6 +1886,8 @@ class ResolveViewModel(
         }
         viewModelScope.launch {
             downloadError = null
+            // 新一轮取链：上一次预取的多源直链作废（直链签名有时效，不能跨次复用）
+            pendingAltLinks = emptyList()
             isFetchingDownloadLink = true
             try {
                 val s = session
@@ -1754,7 +1934,11 @@ class ResolveViewModel(
                 // 优先免转存（不往用户网盘里转存）：夸克失败时自动回退到转存取链
                 resolveShareLink(currentRepo(), s, file, quarkCred)
                     .onSuccess { link ->
-                        enqueueDownload(link, quarkCred, link.filename.ifBlank { file.fname })
+                        val altLinks = fetchAltLinks(file, quarkCred)
+                        enqueueDownload(
+                            link, quarkCred, link.filename.ifBlank { file.fname },
+                            altLinks = altLinks, saveDir = pendingSaveDir
+                        )
                         downloadStarted = true
                     }
                     .onFailure { downloadError = it.message ?: "获取下载链接失败" }
@@ -1764,6 +1948,22 @@ class ResolveViewModel(
         }
     }
 
+    fun dismissDownloadDialog() {
+        val link = downloadLink
+        downloadLink = null
+        // 弹窗没开始下载就关掉：预取的多源直链一并作废（下次取链会重新预取，避免用到过期直链）
+        pendingAltLinks = emptyList()
+        pendingSaveDir = ""
+        // 弹窗被关闭（用户点关闭，未开始下载）：清理当前平台的云端临时转存，避免残留
+        if (link?.cleanupDirFid != null) {
+            viewModelScope.launch {
+                val credential = currentCredential() ?: return@launch
+                link.cleanupDirFid?.let { dirFid ->
+                    currentRepo().cleanupTempDir(dirFid, credential)
+                }
+            }
+        }
+    }
 
     /**
      * 将直链加入下载队列（携带对应平台凭证与 UA；夸克直链做 CDN 节点优选）。
@@ -1772,7 +1972,14 @@ class ResolveViewModel(
     private suspend fun enqueueDownload(
         link: DownloadLink,
         credential: String,
-        fileName: String = link.filename
+        fileName: String = link.filename,
+        /**
+         * 单文件多源分片（实验性 C2）的备选直链（其他账号的直链 + 该账号凭证）；空 = 单源。
+         * 由 [fetchAltLinks] 预取，来自取链弹窗那一次交互，见 [pendingAltLinks]。
+         */
+        altLinks: List<Pair<DownloadLink, String>> = emptyList(),
+        /** 任务级保存目录（空串 = 跟随全局设置） */
+        saveDir: String = ""
     ) {
         val isUC = currentPlatform == SharePlatform.UC
         val isXunlei = currentPlatform == SharePlatform.XUNLEI
@@ -1798,7 +2005,9 @@ class ResolveViewModel(
             else -> DownloadPlatform.QUARK
         }
         // 【关键修复】夸克/UC 共用 __puus：取链与下载必须用同一份已刷新 Cookie（AlistGo/alist#830 类缺陷）
-        // getFreshCookie 有 90 分钟间隔保护，与取链处调用幂等，得到的是同一份。
+        // refreshIfPrimary 只在「传进来的就是主账号那一份」时才刷新，所以主账号路径与原来的
+        // getFreshCookie 完全一致；多账号下载轮换到非主账号时保留它自己的 Cookie ——
+        // 换成主账号的会让直链与身份配成两个账号，CDN 直接 412/403。
         // 游客直链（夸克/UC 小文件）：只有服务端随取链响应下发的游客态 __pugs，没有登录 Cookie。
         // 夸克缺它 CDN 直接 412；UC 缺它 CDN 403（RequestDeniedByCallback: require login）
         val guestCookie = link.guestCookie
@@ -1807,8 +2016,8 @@ class ResolveViewModel(
             guestCookie
         } else {
             when (currentPlatform) {
-                SharePlatform.QUARK -> accountRepository.getFreshCookie() ?: credential
-                SharePlatform.UC -> ucAccountRepository.getFreshCookie() ?: credential
+                SharePlatform.QUARK -> accountRepository.refreshIfPrimary(credential)
+                SharePlatform.UC -> ucAccountRepository.refreshIfPrimary(credential)
                 else -> credential
             }
         }
@@ -1889,6 +2098,24 @@ class ResolveViewModel(
         // 入队前先记住「哪个平台的仓库 + 哪份凭证」：下载完成时用户可能已经切到别的分享页
         val cleanupRepo = currentRepo()
         val cleanupCredential = credential
+        // 单文件多源分片（实验性 C2）：备选源 = 其他账号的直链 + 「主源那一套请求头、只换 Cookie」。
+        // ★ 当前支持的平台（夸克 / UC / 迅雷 / 百度）下载请求头差异都只有 Cookie 一项
+        //   （迅雷直链头里根本没有 Cookie，直链自带签名），所以这里沿用主源头再换 Cookie 即可；
+        //   将来若给 115（双 Cookie）之类开多源，必须重新评估这一处。
+        val altSources = altLinks.map { (altLink, altCred) ->
+            val url = if (isQuark) {
+                // 夸克每条备选直链同样做一次 CDN 节点优选（原样直链容易 412）
+                QuarkCdn.fastest(altLink.downloadUrl, altCred)
+            } else {
+                altLink.downloadUrl
+            }
+            val headersForAlt = if (headers.containsKey("Cookie")) {
+                headers + ("Cookie" to altCred)
+            } else {
+                headers
+            }
+            DownloadSource(url, headersForAlt)
+        }
         downloadManager.enqueue(
             url = effectiveUrl,
             fileName = fileName,
@@ -1917,6 +2144,8 @@ class ResolveViewModel(
                 uiState = ResolveUiState.Detail(s, files)
             }
             .onFailure { e ->
+                // 同 createSession 失败：回填原文，便于用户补提取码后重试
+                prefillRequest = lastResolveInput
                 uiState = ResolveUiState.Error(e.message ?: "获取文件列表失败")
             }
     }
@@ -1948,7 +2177,11 @@ class ResolveViewModel(
         private val githubApi: GitHubApi? = null,
         private val mirrorPrefixProvider: () -> String = { UpdateChecker.MIRROR_PREFIX },
         private val noSaveDownloadProvider: () -> Boolean = { true },
-        private val saveOnDownloadDefaultProvider: () -> Boolean = { false }
+        private val saveOnDownloadDefaultProvider: () -> Boolean = { false },
+        /** 设置仓库：默认直接读偏好，MainScreen 无需改动；多账号 / 多源开关改完即时生效 */
+        private val settings: SettingsRepository = SettingsRepository(),
+        private val multiAccountDownloadProvider: () -> Boolean = { settings.multiAccountDownload },
+        private val multiSourceDownloadProvider: () -> Boolean = { settings.multiSourceActive() }
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: KClass<T>, extras: CreationExtras): T {
@@ -1970,7 +2203,9 @@ class ResolveViewModel(
                 githubApi,
                 mirrorPrefixProvider,
                 noSaveDownloadProvider,
-                saveOnDownloadDefaultProvider
+                saveOnDownloadDefaultProvider,
+                multiAccountDownloadProvider,
+                multiSourceDownloadProvider
             ) as T
         }
     }

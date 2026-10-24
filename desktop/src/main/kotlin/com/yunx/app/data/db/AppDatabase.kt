@@ -100,10 +100,46 @@ class AppDatabase private constructor(private val conn: Connection) {
                             it.execute("ALTER TABLE download_task ADD COLUMN engineTaskId TEXT NOT NULL DEFAULT ''")
                         }
                     }
+                    // 迁移：旧库缺少 altSourcesJson 列时补上（多账号下载 C2 的备选直链，加密落库；空串=单源）
+                    runCatching {
+                        conn.createStatement().use {
+                            it.execute("ALTER TABLE download_task ADD COLUMN altSourcesJson TEXT NOT NULL DEFAULT ''")
+                        }
+                    }
+                    // 迁移：旧库缺少 saveDir 列时补上（单次下载的保存目录覆盖；空串=跟随全局设置）
+                    runCatching {
+                        conn.createStatement().use {
+                            it.execute("ALTER TABLE download_task ADD COLUMN saveDir TEXT NOT NULL DEFAULT ''")
+                        }
+                    }
+                    // 迁移：实验性直写临时文件路径 / 模式
+                    runCatching {
+                        conn.createStatement().use {
+                            it.execute("ALTER TABLE download_task ADD COLUMN directPart TEXT NOT NULL DEFAULT ''")
+                        }
+                    }
+                    runCatching {
+                        conn.createStatement().use {
+                            it.execute("ALTER TABLE download_task ADD COLUMN directMode INTEGER NOT NULL DEFAULT 0")
+                        }
+                    }
                     // 迁移：旧库缺少 authType 列时补上（迅雷登录方式；空串=App 通道，webToken=网页登录）
                     runCatching {
                         conn.createStatement().use {
                             it.execute("ALTER TABLE xunlei_account ADD COLUMN authType TEXT NOT NULL DEFAULT ''")
+                        }
+                    }
+                    // 迁移：多账号（isPrimary / remark）。旧库逐表补列，已存在时忽略。
+                    ACCOUNT_TABLES.forEach { table ->
+                        runCatching {
+                            conn.createStatement().use {
+                                it.execute("ALTER TABLE $table ADD COLUMN isPrimary INTEGER NOT NULL DEFAULT 1")
+                            }
+                        }
+                        runCatching {
+                            conn.createStatement().use {
+                                it.execute("ALTER TABLE $table ADD COLUMN remark TEXT NOT NULL DEFAULT ''")
+                            }
                         }
                     }
                     Log.i(TAG, "database opened: ${dbFile.absolutePath}")
@@ -170,19 +206,24 @@ class AppDatabase private constructor(private val conn: Connection) {
             }
         }
 
+        private val ACCOUNT_TABLES = listOf(
+            "quark_account", "uc_account", "xunlei_account", "baidu_account", "c139_account",
+            "pan123_account", "pan115_account", "guangya_account", "ilanzou_account", "lanzou_account"
+        )
+
         /** Room v13 最终 schema 的 DDL（全新库直接建最终形态）。 */
         private val DDL = listOf(
-            "CREATE TABLE IF NOT EXISTS quark_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS uc_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS xunlei_account (id TEXT PRIMARY KEY NOT NULL, accessToken TEXT NOT NULL, refreshToken TEXT NOT NULL, deviceId TEXT NOT NULL, captchaToken TEXT NOT NULL, nickname TEXT NOT NULL, authType TEXT NOT NULL DEFAULT '', updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS baidu_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS c139_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, authorization TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS pan123_account (id TEXT PRIMARY KEY NOT NULL, accessToken TEXT NOT NULL, account TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS pan115_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS guangya_account (id TEXT PRIMARY KEY NOT NULL, accessToken TEXT NOT NULL, refreshToken TEXT NOT NULL, deviceId TEXT NOT NULL, deviceSign TEXT NOT NULL, account TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS ilanzou_account (id TEXT PRIMARY KEY NOT NULL, appToken TEXT NOT NULL, uuid TEXT NOT NULL, account TEXT NOT NULL, password TEXT NOT NULL, userId TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS lanzou_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS download_task (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, fileName TEXT NOT NULL, totalSize INTEGER NOT NULL, downloadedSize INTEGER NOT NULL, status INTEGER NOT NULL, errorMsg TEXT NOT NULL, savePath TEXT NOT NULL, requestHeadersJson TEXT NOT NULL DEFAULT '{}', chunkCount INTEGER NOT NULL DEFAULT 0, plannedTotalSize INTEGER NOT NULL DEFAULT 0, cleanupId TEXT NOT NULL DEFAULT '', platform TEXT NOT NULL DEFAULT '', shareUrl TEXT NOT NULL DEFAULT '', avgSpeed INTEGER NOT NULL DEFAULT 0, engineTaskId TEXT NOT NULL DEFAULT '', createTime INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS quark_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS uc_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS xunlei_account (id TEXT PRIMARY KEY NOT NULL, accessToken TEXT NOT NULL, refreshToken TEXT NOT NULL, deviceId TEXT NOT NULL, captchaToken TEXT NOT NULL, nickname TEXT NOT NULL, authType TEXT NOT NULL DEFAULT '', updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS baidu_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS c139_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, authorization TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS pan123_account (id TEXT PRIMARY KEY NOT NULL, accessToken TEXT NOT NULL, account TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS pan115_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS guangya_account (id TEXT PRIMARY KEY NOT NULL, accessToken TEXT NOT NULL, refreshToken TEXT NOT NULL, deviceId TEXT NOT NULL, deviceSign TEXT NOT NULL, account TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS ilanzou_account (id TEXT PRIMARY KEY NOT NULL, appToken TEXT NOT NULL, uuid TEXT NOT NULL, account TEXT NOT NULL, password TEXT NOT NULL, userId TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS lanzou_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS download_task (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, fileName TEXT NOT NULL, totalSize INTEGER NOT NULL, downloadedSize INTEGER NOT NULL, status INTEGER NOT NULL, errorMsg TEXT NOT NULL, savePath TEXT NOT NULL, requestHeadersJson TEXT NOT NULL DEFAULT '{}', chunkCount INTEGER NOT NULL DEFAULT 0, plannedTotalSize INTEGER NOT NULL DEFAULT 0, cleanupId TEXT NOT NULL DEFAULT '', platform TEXT NOT NULL DEFAULT '', shareUrl TEXT NOT NULL DEFAULT '', avgSpeed INTEGER NOT NULL DEFAULT 0, engineTaskId TEXT NOT NULL DEFAULT '', altSourcesJson TEXT NOT NULL DEFAULT '', saveDir TEXT NOT NULL DEFAULT '', directPart TEXT NOT NULL DEFAULT '', directMode INTEGER NOT NULL DEFAULT 0, createTime INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, link TEXT NOT NULL, title TEXT NOT NULL, platform TEXT NOT NULL, pwd TEXT NOT NULL, category TEXT NOT NULL, createTime INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS link_history (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, platform TEXT NOT NULL, pwd TEXT NOT NULL, createTime INTEGER NOT NULL)"
         )
@@ -190,33 +231,56 @@ class AppDatabase private constructor(private val conn: Connection) {
 }
 
 /**
- * 单行表 DAO 骨架：一个 StateFlow 承载当前行，写操作后重新加载并推送。
- * 所有 JDBC 访问在 conn 上同步（sqlite-jdbc 单连接非线程安全），IO 调度由调用方 DAO 包装。
+ * 账号表 DAO 骨架（多账号）：所有行常驻内存。
+ *
+ * `getAccount()/observeAccount()` 返回**主账号**（没有主账号时退回最近更新的那条），
+ * 供列目录 / 转存 / 上传等「单一身份」场景使用；列表 / 设主账号 / 改备注 / 删单个账号
+ * 走下面新增的方法。
+ *
+ * ★ 约束：同一张表只允许一条 `isPrimary = 1`。写入主账号、设主账号、删除主账号后都会
+ *   自动把「最近更新的那条」补成主账号，避免出现「有账号但一条都不是主账号」的状态。
  */
-private class JdbcSingleRowDao<T : Any>(
+private class JdbcAccountTable<T : Any>(
     private val conn: Connection,
     private val table: String,
     private val columns: List<String>,
-    private val key: String,
     private val read: (ResultSet) -> T,
-    private val bind: (PreparedStatement, T) -> Unit
+    private val bind: (PreparedStatement, T) -> Unit,
+    private val primaryOf: (T) -> Boolean
 ) {
-    private val _state = MutableStateFlow<T?>(null)
-    val state: Flow<T?> = _state
+    private val _rows = MutableStateFlow<List<T>>(emptyList())
+    val rows: Flow<List<T>> = _rows
 
     init {
-        _state.value = load()
+        _rows.value = loadAll()
     }
 
-    fun load(): T? = synchronized(conn) {
-        conn.prepareStatement("SELECT * FROM `$table` WHERE id = ?").use { ps ->
-            ps.setString(1, key)
-            ps.executeQuery().use { rs -> if (rs.next()) read(rs) else null }
+    fun loadAll(): List<T> = synchronized(conn) {
+        conn.prepareStatement(
+            "SELECT * FROM `$table` ORDER BY isPrimary DESC, updatedAt DESC"
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                val out = mutableListOf<T>()
+                while (rs.next()) out += read(rs)
+                out
+            }
         }
+    }
+
+    fun reload() {
+        _rows.value = loadAll()
+    }
+
+    fun primary(): T? {
+        val all = loadAll()
+        return all.firstOrNull { primaryOf(it) } ?: all.firstOrNull()
     }
 
     fun upsert(value: T) {
         synchronized(conn) {
+            if (primaryOf(value)) {
+                conn.prepareStatement("UPDATE `$table` SET isPrimary = 0").use { it.executeUpdate() }
+            }
             val colList = columns.joinToString(",") { "`$it`" }
             val placeholders = columns.joinToString(",") { "?" }
             conn.prepareStatement(
@@ -225,225 +289,414 @@ private class JdbcSingleRowDao<T : Any>(
                 bind(ps, value)
                 ps.executeUpdate()
             }
+            ensurePrimaryExists()
         }
-        _state.value = load()
+        reload()
+    }
+
+    fun setPrimary(id: String) {
+        synchronized(conn) {
+            conn.prepareStatement("UPDATE `$table` SET isPrimary = 0").use { it.executeUpdate() }
+            conn.prepareStatement("UPDATE `$table` SET isPrimary = 1 WHERE id = ?").use { ps ->
+                ps.setString(1, id)
+                ps.executeUpdate()
+            }
+        }
+        reload()
+    }
+
+    fun updateRemark(id: String, remark: String) {
+        synchronized(conn) {
+            conn.prepareStatement("UPDATE `$table` SET remark = ? WHERE id = ?").use { ps ->
+                ps.setString(1, remark)
+                ps.setString(2, id)
+                ps.executeUpdate()
+            }
+        }
+        reload()
+    }
+
+    fun deleteById(id: String) {
+        synchronized(conn) {
+            conn.prepareStatement("DELETE FROM `$table` WHERE id = ?").use { ps ->
+                ps.setString(1, id)
+                ps.executeUpdate()
+            }
+            ensurePrimaryExists()
+        }
+        reload()
     }
 
     fun clear() {
         synchronized(conn) {
-            conn.prepareStatement("DELETE FROM `$table` WHERE id = ?").use { ps ->
-                ps.setString(1, key)
-                ps.executeUpdate()
-            }
+            conn.prepareStatement("DELETE FROM `$table`").use { it.executeUpdate() }
         }
-        _state.value = null
+        reload()
+    }
+
+    /** 库里一条主账号都没有时，把最近更新那条补成主账号 */
+    private fun ensurePrimaryExists() {
+        val hasPrimary = conn.prepareStatement("SELECT COUNT(*) FROM `$table` WHERE isPrimary = 1").use { ps ->
+            ps.executeQuery().use { rs -> rs.next() && rs.getInt(1) > 0 }
+        }
+        if (hasPrimary) return
+        conn.prepareStatement(
+            "UPDATE `$table` SET isPrimary = 1 WHERE id = (SELECT id FROM `$table` ORDER BY updatedAt DESC LIMIT 1)"
+        ).use { it.executeUpdate() }
     }
 }
 
 private suspend fun <T> dbIo(block: () -> T): T = withContext(Dispatchers.IO) { block() }
 
 private class JdbcQuarkAccountDao(conn: Connection) : QuarkAccountDao {
-    private val d = JdbcSingleRowDao(
-        conn, "quark_account", listOf("id", "cookie", "nickname", "updatedAt"), "quark",
-        read = { rs -> QuarkAccountEntity("quark", rs.getString("cookie"), rs.getString("nickname"), rs.getLong("updatedAt")) },
+    private val d = JdbcAccountTable(
+        conn, "quark_account",
+        listOf("id", "cookie", "nickname", "updatedAt", "isPrimary", "remark"),
+        read = { rs ->
+            QuarkAccountEntity(
+                id = rs.getString("id"),
+                cookie = rs.getString("cookie"),
+                nickname = rs.getString("nickname"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
+            )
+        },
         bind = { ps, a ->
-            ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname); ps.setLong(4, a.updatedAt)
-        }
+            ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname)
+            ps.setLong(4, a.updatedAt); ps.setInt(5, if (a.isPrimary) 1 else 0); ps.setString(6, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<QuarkAccountEntity?> = d.state
+    override fun observeAccount(): Flow<QuarkAccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<QuarkAccountEntity>> = d.rows
     override suspend fun upsert(account: QuarkAccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): QuarkAccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): QuarkAccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<QuarkAccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcUcAccountDao(conn: Connection) : UCAccountDao {
-    private val d = JdbcSingleRowDao(
-        conn, "uc_account", listOf("id", "cookie", "nickname", "updatedAt"), "uc",
-        read = { rs -> UCAccountEntity("uc", rs.getString("cookie"), rs.getString("nickname"), rs.getLong("updatedAt")) },
+    private val d = JdbcAccountTable(
+        conn, "uc_account",
+        listOf("id", "cookie", "nickname", "updatedAt", "isPrimary", "remark"),
+        read = { rs ->
+            UCAccountEntity(
+                id = rs.getString("id"),
+                cookie = rs.getString("cookie"),
+                nickname = rs.getString("nickname"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
+            )
+        },
         bind = { ps, a ->
-            ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname); ps.setLong(4, a.updatedAt)
-        }
+            ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname)
+            ps.setLong(4, a.updatedAt); ps.setInt(5, if (a.isPrimary) 1 else 0); ps.setString(6, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<UCAccountEntity?> = d.state
+    override fun observeAccount(): Flow<UCAccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<UCAccountEntity>> = d.rows
     override suspend fun upsert(account: UCAccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): UCAccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): UCAccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<UCAccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcXunleiAccountDao(conn: Connection) : XunleiAccountDao {
-    private val d = JdbcSingleRowDao(
+    private val d = JdbcAccountTable(
         conn, "xunlei_account",
-        listOf("id", "accessToken", "refreshToken", "deviceId", "captchaToken", "nickname", "authType", "updatedAt"), "xunlei",
+        listOf("id", "accessToken", "refreshToken", "deviceId", "captchaToken", "nickname", "authType", "updatedAt", "isPrimary", "remark"),
         read = { rs ->
             XunleiAccountEntity(
-                "xunlei",
-                rs.getString("accessToken"), rs.getString("refreshToken"), rs.getString("deviceId"),
-                rs.getString("captchaToken"), rs.getString("nickname"),
-                runCatching { rs.getString("authType") }.getOrDefault(""),
-                rs.getLong("updatedAt")
+                id = rs.getString("id"),
+                accessToken = rs.getString("accessToken"),
+                refreshToken = rs.getString("refreshToken"),
+                deviceId = rs.getString("deviceId"),
+                captchaToken = rs.getString("captchaToken"),
+                nickname = rs.getString("nickname"),
+                authType = runCatching { rs.getString("authType") }.getOrDefault(""),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
             )
         },
         bind = { ps, a ->
             ps.setString(1, a.id); ps.setString(2, a.accessToken); ps.setString(3, a.refreshToken)
             ps.setString(4, a.deviceId); ps.setString(5, a.captchaToken); ps.setString(6, a.nickname)
             ps.setString(7, a.authType); ps.setLong(8, a.updatedAt)
-        }
+            ps.setInt(9, if (a.isPrimary) 1 else 0); ps.setString(10, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<XunleiAccountEntity?> = d.state
+    override fun observeAccount(): Flow<XunleiAccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<XunleiAccountEntity>> = d.rows
     override suspend fun upsert(account: XunleiAccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): XunleiAccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): XunleiAccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<XunleiAccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcBaiduAccountDao(conn: Connection) : BaiduAccountDao {
-    private val d = JdbcSingleRowDao(
-        conn, "baidu_account", listOf("id", "cookie", "nickname", "updatedAt"), "baidu",
-        read = { rs -> BaiduAccountEntity("baidu", rs.getString("cookie"), rs.getString("nickname"), rs.getLong("updatedAt")) },
+    private val d = JdbcAccountTable(
+        conn, "baidu_account",
+        listOf("id", "cookie", "nickname", "updatedAt", "isPrimary", "remark"),
+        read = { rs ->
+            BaiduAccountEntity(
+                id = rs.getString("id"),
+                cookie = rs.getString("cookie"),
+                nickname = rs.getString("nickname"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
+            )
+        },
         bind = { ps, a ->
-            ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname); ps.setLong(4, a.updatedAt)
-        }
+            ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname)
+            ps.setLong(4, a.updatedAt); ps.setInt(5, if (a.isPrimary) 1 else 0); ps.setString(6, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<BaiduAccountEntity?> = d.state
+    override fun observeAccount(): Flow<BaiduAccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<BaiduAccountEntity>> = d.rows
     override suspend fun upsert(account: BaiduAccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): BaiduAccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): BaiduAccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<BaiduAccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcC139AccountDao(conn: Connection) : C139AccountDao {
-    private val d = JdbcSingleRowDao(
-        conn, "c139_account", listOf("id", "cookie", "nickname", "authorization", "updatedAt"), "c139",
+    private val d = JdbcAccountTable(
+        conn, "c139_account",
+        listOf("id", "cookie", "nickname", "authorization", "updatedAt", "isPrimary", "remark"),
         read = { rs ->
             C139AccountEntity(
-                "c139", rs.getString("cookie"), rs.getString("nickname"),
-                rs.getString("authorization"), rs.getLong("updatedAt")
+                id = rs.getString("id"),
+                cookie = rs.getString("cookie"),
+                nickname = rs.getString("nickname"),
+                authorization = rs.getString("authorization"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
             )
         },
         bind = { ps, a ->
             ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname)
             ps.setString(4, a.authorization); ps.setLong(5, a.updatedAt)
-        }
+            ps.setInt(6, if (a.isPrimary) 1 else 0); ps.setString(7, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<C139AccountEntity?> = d.state
+    override fun observeAccount(): Flow<C139AccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<C139AccountEntity>> = d.rows
     override suspend fun upsert(account: C139AccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): C139AccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): C139AccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<C139AccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcPan123AccountDao(conn: Connection) : Pan123AccountDao {
-    private val d = JdbcSingleRowDao(
-        conn, "pan123_account", listOf("id", "accessToken", "account", "nickname", "updatedAt"), "pan123",
+    private val d = JdbcAccountTable(
+        conn, "pan123_account",
+        listOf("id", "accessToken", "account", "nickname", "updatedAt", "isPrimary", "remark"),
         read = { rs ->
             Pan123AccountEntity(
-                "pan123", rs.getString("accessToken"), rs.getString("account"),
-                rs.getString("nickname"), rs.getLong("updatedAt")
+                id = rs.getString("id"),
+                accessToken = rs.getString("accessToken"),
+                account = rs.getString("account"),
+                nickname = rs.getString("nickname"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
             )
         },
         bind = { ps, a ->
             ps.setString(1, a.id); ps.setString(2, a.accessToken); ps.setString(3, a.account)
             ps.setString(4, a.nickname); ps.setLong(5, a.updatedAt)
-        }
+            ps.setInt(6, if (a.isPrimary) 1 else 0); ps.setString(7, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<Pan123AccountEntity?> = d.state
+    override fun observeAccount(): Flow<Pan123AccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<Pan123AccountEntity>> = d.rows
     override suspend fun upsert(account: Pan123AccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): Pan123AccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): Pan123AccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<Pan123AccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcPan115AccountDao(conn: Connection) : Pan115AccountDao {
-    private val d = JdbcSingleRowDao(
-        conn, "pan115_account", listOf("id", "cookie", "nickname", "updatedAt"), "pan115",
+    private val d = JdbcAccountTable(
+        conn, "pan115_account",
+        listOf("id", "cookie", "nickname", "updatedAt", "isPrimary", "remark"),
         read = { rs ->
             Pan115AccountEntity(
-                "pan115", rs.getString("cookie"),
-                rs.getString("nickname"), rs.getLong("updatedAt")
+                id = rs.getString("id"),
+                cookie = rs.getString("cookie"),
+                nickname = rs.getString("nickname"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
             )
         },
         bind = { ps, a ->
-            ps.setString(1, a.id); ps.setString(2, a.cookie)
-            ps.setString(3, a.nickname); ps.setLong(4, a.updatedAt)
-        }
+            ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname)
+            ps.setLong(4, a.updatedAt); ps.setInt(5, if (a.isPrimary) 1 else 0); ps.setString(6, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<Pan115AccountEntity?> = d.state
+    override fun observeAccount(): Flow<Pan115AccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<Pan115AccountEntity>> = d.rows
     override suspend fun upsert(account: Pan115AccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): Pan115AccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): Pan115AccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<Pan115AccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcGuangYaAccountDao(conn: Connection) : GuangYaAccountDao {
-    private val d = JdbcSingleRowDao(
+    private val d = JdbcAccountTable(
         conn, "guangya_account",
-        listOf("id", "accessToken", "refreshToken", "deviceId", "deviceSign", "account", "nickname", "updatedAt"),
-        "guangya",
+        listOf("id", "accessToken", "refreshToken", "deviceId", "deviceSign", "account", "nickname", "updatedAt", "isPrimary", "remark"),
         read = { rs ->
             GuangYaAccountEntity(
-                "guangya", rs.getString("accessToken"), rs.getString("refreshToken"),
-                rs.getString("deviceId"), rs.getString("deviceSign"), rs.getString("account"),
-                rs.getString("nickname"), rs.getLong("updatedAt")
+                id = rs.getString("id"),
+                accessToken = rs.getString("accessToken"),
+                refreshToken = rs.getString("refreshToken"),
+                deviceId = rs.getString("deviceId"),
+                deviceSign = rs.getString("deviceSign"),
+                account = rs.getString("account"),
+                nickname = rs.getString("nickname"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
             )
         },
         bind = { ps, a ->
             ps.setString(1, a.id); ps.setString(2, a.accessToken); ps.setString(3, a.refreshToken)
             ps.setString(4, a.deviceId); ps.setString(5, a.deviceSign); ps.setString(6, a.account)
             ps.setString(7, a.nickname); ps.setLong(8, a.updatedAt)
-        }
+            ps.setInt(9, if (a.isPrimary) 1 else 0); ps.setString(10, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<GuangYaAccountEntity?> = d.state
+    override fun observeAccount(): Flow<GuangYaAccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<GuangYaAccountEntity>> = d.rows
     override suspend fun upsert(account: GuangYaAccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): GuangYaAccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): GuangYaAccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<GuangYaAccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcILanzouAccountDao(conn: Connection) : ILanzouAccountDao {
-    private val d = JdbcSingleRowDao(
+    private val d = JdbcAccountTable(
         conn, "ilanzou_account",
-        listOf("id", "appToken", "uuid", "account", "password", "userId", "nickname", "updatedAt"),
-        "ilanzou",
+        listOf("id", "appToken", "uuid", "account", "password", "userId", "nickname", "updatedAt", "isPrimary", "remark"),
         read = { rs ->
             ILanzouAccountEntity(
-                "ilanzou", rs.getString("appToken"), rs.getString("uuid"), rs.getString("account"),
-                rs.getString("password"), rs.getString("userId"), rs.getString("nickname"),
-                rs.getLong("updatedAt")
+                id = rs.getString("id"),
+                appToken = rs.getString("appToken"),
+                uuid = rs.getString("uuid"),
+                account = rs.getString("account"),
+                password = rs.getString("password"),
+                userId = rs.getString("userId"),
+                nickname = rs.getString("nickname"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
             )
         },
         bind = { ps, a ->
             ps.setString(1, a.id); ps.setString(2, a.appToken); ps.setString(3, a.uuid)
             ps.setString(4, a.account); ps.setString(5, a.password); ps.setString(6, a.userId)
             ps.setString(7, a.nickname); ps.setLong(8, a.updatedAt)
-        }
+            ps.setInt(9, if (a.isPrimary) 1 else 0); ps.setString(10, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<ILanzouAccountEntity?> = d.state
+    override fun observeAccount(): Flow<ILanzouAccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<ILanzouAccountEntity>> = d.rows
     override suspend fun upsert(account: ILanzouAccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): ILanzouAccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): ILanzouAccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<ILanzouAccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
 private class JdbcLanzouAccountDao(conn: Connection) : LanzouAccountDao {
-    private val d = JdbcSingleRowDao(
-        conn, "lanzou_account", listOf("id", "cookie", "nickname", "updatedAt"), "lanzou",
+    private val d = JdbcAccountTable(
+        conn, "lanzou_account",
+        listOf("id", "cookie", "nickname", "updatedAt", "isPrimary", "remark"),
         read = { rs ->
             LanzouAccountEntity(
-                "lanzou", rs.getString("cookie"),
-                rs.getString("nickname"), rs.getLong("updatedAt")
+                id = rs.getString("id"),
+                cookie = rs.getString("cookie"),
+                nickname = rs.getString("nickname"),
+                updatedAt = rs.getLong("updatedAt"),
+                isPrimary = runCatching { rs.getInt("isPrimary") != 0 }.getOrDefault(true),
+                remark = runCatching { rs.getString("remark") }.getOrDefault("")
             )
         },
         bind = { ps, a ->
-            ps.setString(1, a.id); ps.setString(2, a.cookie)
-            ps.setString(3, a.nickname); ps.setLong(4, a.updatedAt)
-        }
+            ps.setString(1, a.id); ps.setString(2, a.cookie); ps.setString(3, a.nickname)
+            ps.setLong(4, a.updatedAt); ps.setInt(5, if (a.isPrimary) 1 else 0); ps.setString(6, a.remark)
+        },
+        primaryOf = { it.isPrimary }
     )
 
-    override fun observeAccount(): Flow<LanzouAccountEntity?> = d.state
+    override fun observeAccount(): Flow<LanzouAccountEntity?> =
+        d.rows.map { list -> list.firstOrNull { it.isPrimary } ?: list.firstOrNull() }
+    override fun observeAccounts(): Flow<List<LanzouAccountEntity>> = d.rows
     override suspend fun upsert(account: LanzouAccountEntity) = dbIo { d.upsert(account) }
-    override suspend fun getAccount(): LanzouAccountEntity? = dbIo { d.load() }
+    override suspend fun getAccount(): LanzouAccountEntity? = dbIo { d.primary() }
+    override suspend fun getAccounts(): List<LanzouAccountEntity> = dbIo { d.loadAll() }
+    override suspend fun setPrimary(id: String) = dbIo { d.setPrimary(id) }
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { d.updateRemark(id, remark) }
+    override suspend fun deleteById(id: String) = dbIo { d.deleteById(id) }
     override suspend fun clear() = dbIo { d.clear() }
 }
 
@@ -488,6 +741,13 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
         avgSpeed = rs.getLong("avgSpeed"),
         // 旧库迁移期间 engineTaskId 列可能尚未添加，runCatching 兜底返回空串
         engineTaskId = runCatching { rs.getString("engineTaskId") }.getOrDefault(""),
+        // 旧库迁移期间 altSourcesJson 列可能尚未添加，runCatching 兜底返回空串（按单源处理）
+        altSourcesJson = runCatching { rs.getString("altSourcesJson") }.getOrDefault(""),
+        // 旧库迁移期间 saveDir 列可能尚未添加（空串 = 跟随全局保存目录）
+        saveDir = runCatching { rs.getString("saveDir") }.getOrDefault(""),
+        // 实验性直写：旧库迁移期间列可能尚未添加
+        directPart = runCatching { rs.getString("directPart") }.getOrDefault(""),
+        directMode = runCatching { rs.getInt("directMode") }.getOrDefault(0),
         createTime = rs.getLong("createTime")
     )
 
@@ -497,8 +757,9 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
         synchronized(conn) {
             conn.prepareStatement(
                 "INSERT INTO download_task(url,fileName,totalSize,downloadedSize,status,errorMsg,savePath," +
-                    "requestHeadersJson,chunkCount,plannedTotalSize,cleanupId,platform,shareUrl,avgSpeed,engineTaskId,createTime) " +
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "requestHeadersJson,chunkCount,plannedTotalSize,cleanupId,platform,shareUrl,avgSpeed,engineTaskId," +
+                    "altSourcesJson,saveDir,directPart,directMode,createTime) " +
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 Statement.RETURN_GENERATED_KEYS
             ).use { ps ->
                 ps.setString(1, task.url)
@@ -516,7 +777,11 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
                 ps.setString(13, task.shareUrl)
                 ps.setLong(14, task.avgSpeed)
                 ps.setString(15, task.engineTaskId)
-                ps.setLong(16, task.createTime)
+                ps.setString(16, task.altSourcesJson)
+                ps.setString(17, task.saveDir)
+                ps.setString(18, task.directPart)
+                ps.setInt(19, task.directMode)
+                ps.setLong(20, task.createTime)
                 ps.executeUpdate()
                 ps.generatedKeys.use { gk -> if (gk.next()) gk.getLong(1) else task.id }
             }
@@ -530,6 +795,18 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
                 ps.executeQuery().use { rs -> if (rs.next()) readTask(rs) else null }
             }
         }
+    }
+
+    override suspend fun listAll(): List<DownloadTaskEntity> = dbIo { loadAll() }
+
+    override suspend fun repairCompletedProgress() = dbIo {
+        synchronized(conn) {
+            conn.prepareStatement(
+                "UPDATE download_task SET downloadedSize = totalSize " +
+                    "WHERE status = 3 AND totalSize > 0 AND downloadedSize < totalSize"
+            ).use { it.executeUpdate() }
+        }
+        reload()
     }
 
     override suspend fun updateProgress(id: Long, status: Int, downloadedSize: Long, totalSize: Long) = dbIo {
@@ -606,7 +883,11 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
     override suspend fun complete(id: Long, status: Int, savePath: String, avgSpeed: Long) = dbIo {
         synchronized(conn) {
             conn.prepareStatement(
-                "UPDATE download_task SET status = ?, savePath = ?, avgSpeed = ? WHERE id = ?"
+                // 完成任务：已知总大小时把已下载量补到总大小，避免 UI 显示「已完成 929KB / 1023KB」
+                // （Gopeed 轮询最后一次进度可能略小于 total）；未知大小（total=0）保留实际已下载量
+                "UPDATE download_task SET status = ?, savePath = ?, avgSpeed = ?, " +
+                    "downloadedSize = CASE WHEN totalSize > 0 THEN totalSize ELSE downloadedSize END " +
+                    "WHERE id = ?"
             ).use { ps ->
                 ps.setInt(1, status)
                 ps.setString(2, savePath)
@@ -633,6 +914,18 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
             conn.prepareStatement("UPDATE download_task SET engineTaskId = ? WHERE id = ?").use { ps ->
                 ps.setString(1, engineTaskId)
                 ps.setLong(2, id)
+                ps.executeUpdate()
+            }
+        }
+        reload()
+    }
+
+    override suspend fun updateDirect(id: Long, partPath: String, mode: Int) = dbIo {
+        synchronized(conn) {
+            conn.prepareStatement("UPDATE download_task SET directPart = ?, directMode = ? WHERE id = ?").use { ps ->
+                ps.setString(1, partPath)
+                ps.setInt(2, mode)
+                ps.setLong(3, id)
                 ps.executeUpdate()
             }
         }

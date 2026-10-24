@@ -299,7 +299,7 @@ class LanzouCloudViewModel(
         files.forEach { out.add(Triple(it, "$prefix/${it.fname}", info)) }
     }
 
-    fun downloadFolder() {
+    fun downloadFolder(saveDir: String = "") {
         val folder = actionFile ?: return
         if (!folder.isdir) return
         viewModelScope.launch {
@@ -327,7 +327,8 @@ class LanzouCloudViewModel(
                             fileName = relPath,
                             size = link.size,
                             platform = DownloadPlatform.LANZOU,
-                            headers = downloadHeaders(link.downloadUrl)
+                            headers = downloadHeaders(link.downloadUrl),
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -350,7 +351,10 @@ class LanzouCloudViewModel(
     }
 
     /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
-    fun downloadFile() {
+    fun downloadFile() = downloadFileTo("")
+
+    /** 下载到指定目录：单次覆盖保存目录，不改「设置 → 储存目录」的全局设置 */
+    fun downloadFileTo(saveDir: String) {
         val file = actionFile ?: return
         viewModelScope.launch {
             isOperating = true
@@ -363,6 +367,7 @@ class LanzouCloudViewModel(
                     fileName = fileName,
                     size = link.size,
                     platform = DownloadPlatform.LANZOU,
+                    saveDir = saveDir,
                     headers = downloadHeaders(link.downloadUrl)
                 )
                 cloudMessage = "已加入下载：$fileName"
@@ -489,7 +494,7 @@ class LanzouCloudViewModel(
 
     // ---------- 批量操作 ----------
 
-    fun downloadSelected() {
+    fun downloadSelected(saveDir: String = "") {
         val files = _selected.toList()
         if (files.isEmpty()) return
         viewModelScope.launch {

@@ -6,62 +6,76 @@ package com.yunx.app.data.db
 
 /** 夸克网盘登录凭证（cookie 落库，后续所有 API 请求携带）。 */
 data class QuarkAccountEntity(
-    val id: String = "quark",
+    override val id: String = "quark",
     val cookie: String = "",
-    val nickname: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val nickname: String = "",
+    override val updatedAt: Long = System.currentTimeMillis(),
+    /** 该平台主账号（列目录 / 转存等单一身份操作用它） */
+    override val isPrimary: Boolean = true,
+    /** 用户备注；空串 = 界面回退显示昵称 */
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** UC 网盘登录凭证。 */
 data class UCAccountEntity(
-    val id: String = "uc",
+    override val id: String = "uc",
     val cookie: String = "",
-    val nickname: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val nickname: String = "",
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** 迅雷网盘登录凭证（access_token 落库，pan API 请求携带 Bearer）。 */
 data class XunleiAccountEntity(
-    val id: String = "xunlei",
+    override val id: String = "xunlei",
     val accessToken: String = "",
     val refreshToken: String = "",
     val deviceId: String = "",
     val captchaToken: String = "",
-    val nickname: String = "",
+    override val nickname: String = "",
     /**
      * 登录方式：空串 = App 通道（账号密码 / 短信，用 App OAuth 客户端刷新）；
      * [com.yunx.app.data.network.XunleiWebCredential.AUTH_TYPE] = 网页登录，
      * 刷新必须换成网页 OAuth 客户端（否则刷新必失败，用户会看到「刚登录就过期」）。
      */
     val authType: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** 百度网盘登录凭证。关键字段：BDUSS / STOKEN。 */
 data class BaiduAccountEntity(
-    val id: String = "baidu",
+    override val id: String = "baidu",
     val cookie: String = "",
-    val nickname: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val nickname: String = "",
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** 139 网盘（和彩云）登录凭证。 */
 data class C139AccountEntity(
-    val id: String = "c139",
+    override val id: String = "c139",
     val cookie: String = "",
-    val nickname: String = "",
+    override val nickname: String = "",
     val authorization: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** 123 云盘登录凭证（JWT token，请求带 Authorization: Bearer <token>）。 */
 data class Pan123AccountEntity(
-    val id: String = "pan123",
+    override val id: String = "pan123",
     val accessToken: String = "",
     val account: String = "",
-    val nickname: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val nickname: String = "",
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /**
  * 115 网盘登录凭证（115.com cookie 落库，后续 API 请求携带）。
@@ -72,43 +86,51 @@ data class Pan123AccountEntity(
  * - 下载直链还要求请求头带上这份 Cookie（115 CDN 无 Cookie 会 403）。
  */
 data class Pan115AccountEntity(
-    val id: String = "pan115",
+    override val id: String = "pan115",
     val cookie: String = "",
-    val nickname: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val nickname: String = "",
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** 光鸭云盘登录凭证（accessToken / refreshToken / 设备标识落库，接口鉴权与设备校验用）。 */
 data class GuangYaAccountEntity(
-    val id: String = "guangya",
+    override val id: String = "guangya",
     val accessToken: String = "",
     val refreshToken: String = "",
     val deviceId: String = "",
     val deviceSign: String = "",
     val account: String = "",
-    val nickname: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val nickname: String = "",
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** 蓝奏云优享版登录凭证（appToken 鉴权；账号密码用于重新登录）。 */
 data class ILanzouAccountEntity(
-    val id: String = "ilanzou",
+    override val id: String = "ilanzou",
     val appToken: String = "",
     val uuid: String = "",
     val account: String = "",
     val password: String = "",
     val userId: String = "",
-    val nickname: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val nickname: String = "",
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** 蓝奏云登录凭证（cookie 落库，后续接口请求携带）。 */
 data class LanzouAccountEntity(
-    val id: String = "lanzou",
+    override val id: String = "lanzou",
     val cookie: String = "",
-    val nickname: String = "",
-    val updatedAt: Long = System.currentTimeMillis()
-)
+    override val nickname: String = "",
+    override val updatedAt: Long = System.currentTimeMillis(),
+    override val isPrimary: Boolean = true,
+    override val remark: String = ""
+) : MultiAccountEntity
 
 /** 下载任务（持久化，断点续传依赖 part 文件 + 已下载大小）。 */
 data class DownloadTaskEntity(
@@ -141,6 +163,21 @@ data class DownloadTaskEntity(
      * 非空时该任务的进度由引擎同步协程回写，暂停 / 继续 / 删除都要转发给引擎。
      */
     val engineTaskId: String = "",
+    /**
+     * 单文件多源分片（实验性「多账号下载提速 C2」）的备选下载源 JSON：多账号对同一文件
+     * 各取一条直链，内置分片下载器把分片轮流分给不同源（落库前按 `download.altSources` 加密）。
+     * 空串 = 单源，与未开启该功能时完全一致。
+     */
+    val altSourcesJson: String = "",
+    /**
+     * 本任务的保存目录覆盖（绝对路径）；空串 = 跟随「设置 → 储存目录」的下载保存目录。
+     * 单次下载选择「下载到…」时写入，暂停/续传/重新下载都沿用它，不受之后改全局设置影响。
+     */
+    val saveDir: String = "",
+    /** 实验性直写：目标目录中的 `.yunx-*.part` 绝对路径；空串 = 非直写（走缓存分片） */
+    val directPart: String = "",
+    /** 直写模式：0=非直写，1=单线程直写，2=多线程直写 */
+    val directMode: Int = 0,
     val createTime: Long = System.currentTimeMillis()
 ) {
     companion object {

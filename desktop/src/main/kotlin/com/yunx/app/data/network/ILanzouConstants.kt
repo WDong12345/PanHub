@@ -59,10 +59,4 @@ object ILanzouConstants {
     /** 文件夹 id 前缀 d: / 文件 id 前缀 f:（文档 §3.1 ID 规范） */
     const val FOLDER_PREFIX = "d:"
     const val FILE_PREFIX = "f:"
-
-    /** 随机设备标识（服务端 getUuid 失败时的兜底形态） */
-    fun newUuid(): String {
-        val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-        return buildString(16) { repeat(16) { append(chars.random()) } }
-    }
 }

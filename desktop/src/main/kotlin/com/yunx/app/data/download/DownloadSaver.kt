@@ -55,6 +55,110 @@ object DownloadSaver {
     fun resolveSaveDir(custom: String?): File =
         custom?.takeIf { it.isNotBlank() }?.let { File(it) } ?: DesktopActions.defaultDownloadDir
 
+    // ---------- 实验性：直写目标目录的临时文件 ----------
+
+    /** 直写临时文件信息：`partFile` 与最终文件同目录，完成后 rename 到 `finalName` */
+    data class DirectPartLocation(
+        val partFile: File,
+        val destDir: File,
+        val finalName: String
+    )
+
+    /**
+     * 准备直写临时文件：`<目标目录>/<文件名>.yunx-<任务id>.part`。
+     *
+     * 不直接写最终文件名，避免暂停/失败后目标目录出现“看起来完整、实际残缺”的文件。
+     * 任务 id 保证同一目录下多个同名任务不会共用临时文件；路径过长/越界/目录不可建时返回 null，
+     * 调用方应回退到缓存分片模式。
+     */
+    fun prepareDirectPart(
+        fileName: String,
+        targetDirUri: String?,
+        taskId: Long
+    ): DirectPartLocation? {
+        val safePath = DownloadPathPolicy.sanitize(
+            fileName,
+            fallbackName = "download_${System.currentTimeMillis()}"
+        ) ?: run {
+            Log.e(TAG, "直写：拒绝不安全的下载相对路径")
+            return null
+        }
+        return runCatching {
+            val baseDir = if (!targetDirUri.isNullOrBlank()) File(targetDirUri) else DesktopActions.defaultDownloadDir
+            val canonicalBase = baseDir.canonicalFile
+            val destDir = (if (safePath.relativeDirectory.isBlank()) {
+                canonicalBase
+            } else {
+                File(canonicalBase, safePath.relativeDirectory)
+            }).canonicalFile
+            if (destDir != canonicalBase && !DownloadPathPolicy.isContained(canonicalBase, destDir)) {
+                throw SecurityException("下载目录越界")
+            }
+            if (!destDir.exists() && !destDir.mkdirs()) {
+                throw java.io.IOException("无法创建目录：$destDir")
+            }
+            val part = File(destDir, "${safePath.fileName}.yunx-$taskId.part").canonicalFile
+            if (!DownloadPathPolicy.isContained(canonicalBase, part)) {
+                throw SecurityException("直写临时文件越界")
+            }
+            // Windows 默认路径上限 260；留出 .plan/.done 后缀余量，过长则回退缓存模式
+            if (part.absolutePath.length > 235) {
+                throw java.io.IOException("直写临时文件路径过长：${part.absolutePath}")
+            }
+            DirectPartLocation(part, destDir, safePath.fileName)
+        }.onFailure {
+            Log.w(TAG, "直写：准备临时文件失败：${it.message}")
+        }.getOrNull()
+    }
+
+    /** 直写完成后把 `.part` 改名为最终文件（同名自动加时间戳）；返回最终绝对路径 */
+    fun commitDirectPart(partFile: File, destDir: File, finalName: String): String? {
+        val candidates = buildList {
+            add(finalName)
+            repeat(3) { i -> add(timestampedName(finalName, i)) }
+        }.map { File(destDir, it).canonicalFile }
+            .filter { DownloadPathPolicy.isContained(destDir.canonicalFile, it) }
+        val dest = candidates.firstOrNull { !it.exists() } ?: return null
+        return runCatching {
+            try {
+                java.nio.file.Files.move(
+                    partFile.toPath(), dest.toPath(),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (e: java.nio.file.AtomicMoveNotSupportedException) {
+                java.nio.file.Files.move(partFile.toPath(), dest.toPath())
+            } catch (e: Exception) {
+                // 极少数文件系统/占用场景：退化为复制后删除（仍不覆盖已有文件）
+                partFile.inputStream().use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output, COPY_BUFFER_SIZE) }
+                }
+                partFile.delete()
+            }
+            // 临时文件已改名，进度清单不再需要
+            directPlanFile(partFile).delete()
+            directDoneFile(partFile).delete()
+            dest.absolutePath
+        }.onFailure {
+            Log.e(TAG, "直写：提交最终文件失败：${it.message}")
+        }.getOrNull()
+    }
+
+    /** 直写多线程模式的进度清单路径（单线程模式不需要） */
+    fun directPlanFile(partFile: File): File = File(partFile.absolutePath + ".plan")
+
+    fun directDoneFile(partFile: File): File = File(partFile.absolutePath + ".done")
+
+    /** 删除直写临时文件及其清单；失败不抛出 */
+    fun deleteDirectPart(partPath: String?) {
+        if (partPath.isNullOrBlank()) return
+        runCatching {
+            val part = File(partPath)
+            part.delete()
+            directPlanFile(part).delete()
+            directDoneFile(part).delete()
+        }.onFailure { Log.w(TAG, "直写：清理临时文件失败：${it.message}") }
+    }
+
     /**
      * 打开「直接向最终位置写入」的保存目的地（大文件下载主路径）。
      *

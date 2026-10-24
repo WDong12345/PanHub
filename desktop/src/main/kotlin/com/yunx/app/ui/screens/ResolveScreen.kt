@@ -180,6 +180,16 @@ fun ResolveScreen(
         }
     }
 
+    // 解析失败时把原文回填到输入框。典型场景：剪贴板弹窗点「打开」，但链接没带提取码导致解析失败 ——
+    // 回填后用户只要再补一个提取码即可重试，不必把链接重新粘贴一次。
+    LaunchedEffect(viewModel.prefillRequest) {
+        viewModel.consumePrefill()?.let { text ->
+            link = text
+            // 让下面的自动匹配提取码重新生效（否则上一次的「手动输入过」会把匹配挡掉）
+            pwdEdited = false
+        }
+    }
+
     // 下载错误提示
     LaunchedEffect(downloadError) {
         downloadError?.let {

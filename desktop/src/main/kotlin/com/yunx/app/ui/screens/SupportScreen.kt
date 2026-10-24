@@ -57,7 +57,7 @@ import com.yunx.app.util.DesktopActions
 
 /**
  * 支持开发页：展示赞赏码与开源仓库入口。
- * Material3 风格：渐变头部 + 卡片展示赞赏码（原项目 + 桌面移植） + 感谢语 + 开源仓库按钮。
+ * Material3 风格：渐变头部 + 卡片展示赞赏码（安卓版 + 桌面端） + 感谢语 + 开源仓库按钮。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -179,7 +179,7 @@ fun SupportScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        // 原安卓项目作者赞赏码
+                        // 安卓版作者赞赏码
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Surface(
                                 modifier = Modifier
@@ -190,20 +190,20 @@ fun SupportScreen(
                             ) {
                                 androidx.compose.foundation.Image(
                                     painter = painterResource("sponsor_cyqawa_weixin.png"),
-                                    contentDescription = "原项目赞赏码（点击放大）",
+                                    contentDescription = "安卓版赞赏码（点击放大）",
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Fit
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "原安卓项目 (CYQawa)",
+                                text = "安卓版 (CYQawa)",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         Spacer(modifier = Modifier.width(20.dp))
-                        // 桌面版移植作者赞赏码
+                        // 桌面端作者赞赏码
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Surface(
                                 modifier = Modifier
@@ -214,14 +214,14 @@ fun SupportScreen(
                             ) {
                                 androidx.compose.foundation.Image(
                                     painter = painterResource("sponsor_tidain_weixin.png"),
-                                    contentDescription = "桌面版赞赏码（点击放大）",
+                                    contentDescription = "桌面端赞赏码（点击放大）",
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Fit
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "桌面移植 (tidain)",
+                                text = "桌面端 (tidain)",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -295,16 +295,16 @@ fun SupportScreen(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("原安卓项目仓库")
+                Text("安卓版仓库")
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // ---------- PC 移植版仓库入口 ----------
+            // ---------- PC 版仓库入口 ----------
             OutlinedButton(
                 onClick = {
                     DesktopActions.openUrl("https://github.com/tidain/YunX-Desktop")
-                    SnackbarController.show("已打开 PC 移植版仓库")
+                    SnackbarController.show("已打开 PC 版仓库")
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -316,7 +316,7 @@ fun SupportScreen(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("PC 移植版仓库")
+                Text("PC 版仓库")
             }
         }
     }

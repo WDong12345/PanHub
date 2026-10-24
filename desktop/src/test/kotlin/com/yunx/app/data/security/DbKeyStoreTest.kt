@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 /**
  * 加密等级切换的**核心不变量**：切档只重新包裹 32 字节主密钥，密钥本身不变 ——

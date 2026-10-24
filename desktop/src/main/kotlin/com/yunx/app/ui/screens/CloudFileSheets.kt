@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -52,6 +53,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,6 +73,9 @@ import com.yunx.app.ui.resolve.CrumbBar
 import com.yunx.app.ui.resolve.ShareFileRow
 import com.yunx.app.ui.viewmodel.QuarkCloudUiState
 import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 文件操作菜单类型（FileActionSheet 内切换）；对文件行内联按钮开放，用于直达指定步骤 */
 internal enum class ActionStep { MENU, MOVE, SHARE, RENAME, DELETE }
@@ -100,6 +105,18 @@ internal fun FileActionSheet(
     // 移动目标浏览用独立状态（moveUiState），不影响主列表
     val moveState by viewModel.moveUiState.collectAsState()
     val operating = viewModel.isOperating
+    val scope = rememberCoroutineScope()
+
+    /** 选择本次下载的保存目录（原生目录选择器）；取消则不改动 */
+    fun pickDownloadDir(onPicked: (String) -> Unit) {
+        scope.launch {
+            val dir = withContext(Dispatchers.IO) { DesktopActions.pickDirectory() }
+            if (!dir.isNullOrBlank()) {
+                onPicked(dir)
+                onDismiss()
+            }
+        }
+    }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -117,9 +134,15 @@ internal fun FileActionSheet(
                     viewModel.downloadFile()
                     onDismiss()
                 },
+                onDownloadTo = {
+                    pickDownloadDir { viewModel.downloadFileTo(it) }
+                },
                 onDownloadFolder = {
                     viewModel.downloadFolder()
                     onDismiss()
+                },
+                onDownloadFolderTo = {
+                    pickDownloadDir { viewModel.downloadFolder(it) }
                 },
                 onShare = { step = ActionStep.SHARE },
                 onMove = {
@@ -178,7 +201,9 @@ internal fun FileActionSheet(
 private fun ActionMenu(
     file: ShareFile,
     onDownload: () -> Unit,
+    onDownloadTo: () -> Unit,
     onDownloadFolder: (() -> Unit)? = null,
+    onDownloadFolderTo: (() -> Unit)? = null,
     onShare: () -> Unit,
     onMove: () -> Unit,
     onRename: () -> Unit,
@@ -233,14 +258,32 @@ private fun ActionMenu(
                 tint = MaterialTheme.colorScheme.primary,
                 onClick = onDownload
             )
-        } else if (onDownloadFolder != null) {
             ActionItem(
-                icon = Icons.Outlined.Download,
-                title = "下载文件夹",
-                desc = "递归下载整个文件夹，保持目录结构",
+                icon = Icons.Outlined.FolderOpen,
+                title = "下载到…",
+                desc = "选择本次保存的文件夹（不改全局设置）",
                 tint = MaterialTheme.colorScheme.primary,
-                onClick = onDownloadFolder
+                onClick = onDownloadTo
             )
+        } else {
+            if (onDownloadFolder != null) {
+                ActionItem(
+                    icon = Icons.Outlined.Download,
+                    title = "下载文件夹",
+                    desc = "递归下载整个文件夹，保持目录结构",
+                    tint = MaterialTheme.colorScheme.primary,
+                    onClick = onDownloadFolder
+                )
+            }
+            if (onDownloadFolderTo != null) {
+                ActionItem(
+                    icon = Icons.Outlined.FolderOpen,
+                    title = "下载文件夹到…",
+                    desc = "选择本次保存的文件夹（不改全局设置）",
+                    tint = MaterialTheme.colorScheme.primary,
+                    onClick = onDownloadFolderTo
+                )
+            }
         }
         ActionItem(
             icon = Icons.Outlined.Share,
@@ -798,6 +841,7 @@ internal fun BatchActionSheet(
     val moveState by viewModel.moveUiState.collectAsState()
     val operating = viewModel.isOperating
     val count = viewModel.selected.size
+    val scope = rememberCoroutineScope()
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -814,6 +858,15 @@ internal fun BatchActionSheet(
                 onDownload = {
                     viewModel.downloadSelected()
                     onDismiss()
+                },
+                onDownloadTo = {
+                    scope.launch {
+                        val dir = withContext(Dispatchers.IO) { DesktopActions.pickDirectory() }
+                        if (!dir.isNullOrBlank()) {
+                            viewModel.downloadSelected(dir)
+                            onDismiss()
+                        }
+                    }
                 },
                 onShare = { step = BatchStep.SHARE },
                 onMove = {
@@ -863,6 +916,7 @@ internal fun BatchActionSheet(
 private fun BatchMenu(
     count: Int,
     onDownload: () -> Unit,
+    onDownloadTo: () -> Unit,
     onShare: () -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit
@@ -912,6 +966,13 @@ private fun BatchMenu(
             desc = "批量下载到本机",
             tint = MaterialTheme.colorScheme.primary,
             onClick = onDownload
+        )
+        ActionItem(
+            icon = Icons.Outlined.FolderOpen,
+            title = "下载到…",
+            desc = "选择本次保存的文件夹（不改全局设置）",
+            tint = MaterialTheme.colorScheme.primary,
+            onClick = onDownloadTo
         )
         ActionItem(
             icon = Icons.Outlined.Share,

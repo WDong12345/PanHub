@@ -268,8 +268,8 @@ class BaiduCloudViewModel(
         }
     }
 
-    /** 下载整个文件夹（操作菜单）：递归收集所有文件，保持目录结构保存到 Download */
-    fun downloadFolder() {
+    /** 下载整个文件夹（操作菜单）：递归收集所有文件，保持目录结构保存到指定目录（空=全局设置） */
+    fun downloadFolder(saveDir: String = "") {
         val folder = actionFile ?: return
         if (!folder.isdir) return
         viewModelScope.launch {
@@ -297,7 +297,8 @@ class BaiduCloudViewModel(
                             fileName = relPath, // 相对路径：Download/文件夹A/子目录/文件.mp4
                             size = file.fsize,
                             platform = DownloadPlatform.BAIDU,
-                            headers = downloadHeaders(cookie)
+                            headers = downloadHeaders(cookie),
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -320,7 +321,10 @@ class BaiduCloudViewModel(
     }
 
     /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
-    fun downloadFile() {
+    fun downloadFile() = downloadFileTo("")
+
+    /** 下载到指定目录：单次覆盖保存目录，不改「设置 → 储存目录」的全局设置 */
+    fun downloadFileTo(saveDir: String) {
         val file = actionFile ?: return
         viewModelScope.launch {
             isOperating = true
@@ -331,6 +335,7 @@ class BaiduCloudViewModel(
                     fileName = file.fname,
                     size = file.fsize,
                     platform = DownloadPlatform.BAIDU,
+                    saveDir = saveDir,
                     headers = mapOf(
                         "Cookie" to cookie(),
                         "User-Agent" to BaiduConstants.UA_WEB
@@ -461,7 +466,7 @@ class BaiduCloudViewModel(
     // ---------- 批量操作 ----------
 
     /** 批量下载（不切页；选中文件夹时递归下载整个文件夹并保持目录结构） */
-    fun downloadSelected() {
+    fun downloadSelected(saveDir: String = "") {
         val files = _selected.toList()
         if (files.isEmpty()) return
         viewModelScope.launch {

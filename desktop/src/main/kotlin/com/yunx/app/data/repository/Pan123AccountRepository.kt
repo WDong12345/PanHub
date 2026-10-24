@@ -2,6 +2,8 @@ package com.yunx.app.data.repository
 
 import com.yunx.app.data.db.Pan123AccountDao
 import com.yunx.app.data.db.Pan123AccountEntity
+import com.yunx.app.data.db.resolveAccountSlot
+import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.Pan123Api
 import com.yunx.app.data.network.Pan123LoginResult
 import com.yunx.app.util.CookieCleaner
@@ -21,23 +23,34 @@ class Pan123AccountRepository(
 
     suspend fun getAccount(): Pan123AccountEntity? = dao.getAccount()
 
+    /** 该平台全部账号可用的凭证（主账号在前）：多账号下载（实验性 C1）轮换取链用 */
+    suspend fun allCredentials(): List<String> =
+        dao.getAccounts().map { it.accessToken }.filter { it.isNotBlank() }
+
     /**
      * 账号密码登录（POST user.123pan.cn/api/user/sign_in，无需签名）→ token 落库。
      *
      * @return 成功返回 null；失败返回可直接展示给用户的原因（已做过错误映射，不回显服务端原文）
      */
-    suspend fun loginWithPassword(account: String, password: String): String? =
+    suspend fun loginWithPassword(
+        account: String,
+        password: String,
+        newAccount: Boolean = false
+    ): String? =
         when (val result = api.passwordLogin(account, password)) {
             is Pan123LoginResult.Success -> {
                 // sign_in 只回 token，昵称要另取一次；取不到（网络抖动）不算登录失败——
                 // token 是刚签发的确实可用，昵称退化成账号名展示即可
                 val nickname = api.fetchNickname(result.token)?.takeIf { it.isNotBlank() }
+                val slot = resolveAccountSlot(DownloadPlatform.PAN123, dao.getAccount(), newAccount)
                 dao.upsert(
                     Pan123AccountEntity(
-                        id = "pan123",
+                        id = slot.id,
                         accessToken = result.token,
                         account = account.trim(),
-                        nickname = nickname ?: account.trim()
+                        nickname = nickname ?: account.trim(),
+                        isPrimary = slot.isPrimary,
+                        remark = slot.remark
                     )
                 )
                 null

@@ -2,6 +2,7 @@ package com.yunx.app.data.network
 
 import com.yunx.app.AppContext
 import com.yunx.app.data.security.FileCredentialCipher
+import com.yunx.app.util.Log
 
 /**
  * GitHub Token 加密存储。
@@ -20,34 +21,40 @@ object GitHubTokenStore {
 
     private val cipher = FileCredentialCipher()
 
-    /** 读取已加密 Token 并解密；未配置或解密失败返回 null */
+    /** 读取已加密 Token 并解密；未配置或**当前解不开**返回 null */
     fun getToken(): String? {
         val stored = AppContext.miscPrefs.get(KEY_TOKEN, null) ?: return null
         return runCatching { cipher.decrypt(stored, PURPOSE) }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
-            // 解密失败自愈（对齐上游 #144 口径）：密钥文件丢失/轮换后，这段密文永远解不开，
-            // 留着只会每次读取都失败；清掉它，UI 才会如实显示「未配置 Token」并允许重新填写。
-            ?: run {
-                AppContext.miscPrefs.remove(KEY_TOKEN)
-                null
-            }
+        // ★ 解密失败**不要删**（对齐上游 #179「凭证加固」）：密钥一时读不到（文件被占用等）就删掉，
+        //   等于把用户配置的 Token 永久丢掉。本次返回 null（界面按「未配置」处理），
+        //   下次读取能解开时自动恢复。
     }
 
-    /** 设置/更新 Token；传 null 或空串则清除 */
-    fun setToken(token: String?) {
+    /** 设置/更新 Token；传 null 或空串则清除。返回是否确实写入成功 */
+    fun setToken(token: String?): Boolean {
         val prefs = AppContext.miscPrefs
         val trimmed = token?.trim().orEmpty()
         if (trimmed.isEmpty()) {
             prefs.remove(KEY_TOKEN)
-            return
+            return true
         }
-        runCatching {
-            val encrypted = cipher.encrypt(trimmed, PURPOSE)
-            prefs.put(KEY_TOKEN, encrypted)
+        return runCatching {
+            prefs.put(KEY_TOKEN, cipher.encrypt(trimmed, PURPOSE))
+            true
+        }.getOrElse {
+            // 加密失败（密钥暂时不可用）：保留原值，不要覆盖成空
+            Log.w("YunX-GitHub", "Token 加密失败，保留原值：${it.message ?: it.javaClass.simpleName}")
+            false
         }
     }
 
-    /** 是否已配置 Token（仅判断是否存在，不做解密） */
-    fun hasToken(): Boolean = !AppContext.miscPrefs.get(KEY_TOKEN, null).isNullOrBlank()
+    /**
+     * 是否「已配置**且当前能读出来**」。
+     *
+     * ★ 刻意解密一次：密文读不出来时若仍报「已配置」，界面会显示已登录 GitHub，
+     *   实际每个请求都在静默走匿名限额（60 次/小时）。调用方应 remember 结果、别每帧调。
+     */
+    fun hasToken(): Boolean = getToken() != null
 }

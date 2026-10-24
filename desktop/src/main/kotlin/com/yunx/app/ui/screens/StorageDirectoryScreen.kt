@@ -49,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +69,9 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yunx.app.AppContext
+import com.yunx.app.data.db.AppDatabase
+import com.yunx.app.data.db.DownloadTaskEntity
+import com.yunx.app.data.download.DownloadCacheMaintenance
 import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.data.security.DbEncryptionLevel
 import com.yunx.app.data.security.DbEncryptionManager
@@ -197,6 +201,52 @@ fun StorageSettingsPanel(
     // 数据库加密等级（立即生效，不需要重启）；显示**实际**档位而非偏好值
     var encLevel by remember { mutableStateOf(DbEncryptionManager.effectiveLevel()) }
     var pendingLevel by remember { mutableStateOf<DbEncryptionLevel?>(null) }
+
+    // 下载缓存占用 / 手动清理（Issue #17：除了自动清理，也给用户一个立刻回收空间的入口）
+    var cacheUsage by remember { mutableStateOf<DownloadCacheMaintenance.Usage?>(null) }
+    var cleanCacheConfirm by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        cacheUsage = withContext(Dispatchers.IO) { DownloadCacheMaintenance.usage() }
+    }
+
+    /** 清理缓存：保留正在下载/等待中任务的分片，暂停/失败任务的分片删掉（它们下次从头下） */
+    fun cleanDownloadCache() {
+        scope.launch {
+            busy = true
+            busyText = "正在清理下载缓存…"
+            try {
+                val dao = AppDatabase.get().downloadTaskDao()
+                val keep = dao.listAll()
+                    .filter {
+                        it.status == DownloadTaskEntity.STATUS_DOWNLOADING ||
+                            it.status == DownloadTaskEntity.STATUS_PENDING
+                    }
+                    .map { it.id }
+                    .toSet()
+                val result = withContext(Dispatchers.IO) {
+                    val chunks = DownloadCacheMaintenance.cleanChunkDirsExcept(keep)
+                    // 实验性直写：目标目录里的 .part/.plan/.done 也一并清理（保留进行中的任务）
+                    val direct = DownloadCacheMaintenance.cleanDirectParts(dao, keep)
+                    DownloadCacheMaintenance.CleanResult(
+                        freedBytes = chunks.freedBytes + direct.freedBytes,
+                        deletedDirs = chunks.deletedDirs + direct.deletedDirs
+                    )
+                }
+                cacheUsage = withContext(Dispatchers.IO) { DownloadCacheMaintenance.usage() }
+                SnackbarController.show(
+                    if (result.freedBytes > 0) {
+                        "已清理下载缓存，释放 ${DownloadCacheMaintenance.formatBytes(result.freedBytes)}"
+                    } else {
+                        "没有可清理的下载缓存"
+                    }
+                )
+            } catch (e: Exception) {
+                SnackbarController.show("清理失败：${e.message ?: "未知错误"}")
+            } finally {
+                busy = false
+            }
+        }
+    }
 
     /** 写配置：默认位置存 null（跟随数据根目录），其余存绝对路径 */
     fun persist(kind: StorageKind, target: File) {
@@ -369,6 +419,25 @@ fun StorageSettingsPanel(
                                 SnackbarController.show("无法打开该目录")
                             }
                         }) { Text("打开所在文件夹") }
+                        Spacer(Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "当前下载分片占用：" +
+                                    (cacheUsage?.let { DownloadCacheMaintenance.formatBytes(it.bytes) } ?: "计算中…"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.weight(1f))
+                            TextButton(
+                                onClick = { cleanCacheConfirm = true },
+                                enabled = !busy && (cacheUsage?.bytes ?: 0L) > 0
+                            ) { Text("清理缓存") }
+                        }
+                        HintRow(
+                            "清理会删除暂停 / 失败任务的分片，以及实验性直写在目标目录里的 .part 临时文件" +
+                                "（这些任务下次开始时从头下载）；正在下载与等待中的任务不受影响。" +
+                                "任务完成时也会自动删除对应临时文件。"
+                        )
                     }
                 }
                 val dbSection: @Composable () -> Unit = {
@@ -519,6 +588,31 @@ fun StorageSettingsPanel(
             },
             dismissButton = {
                 TextButton(onClick = { request = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // 清理下载缓存确认
+    if (cleanCacheConfirm) {
+        FadeAlertDialog(
+            visible = true,
+            onDismissRequest = { cleanCacheConfirm = false },
+            title = { Text("清理下载缓存？") },
+            text = {
+                Text(
+                    "将删除暂停 / 失败任务的分片缓存（当前占用 " +
+                        (cacheUsage?.let { DownloadCacheMaintenance.formatBytes(it.bytes) } ?: "未知") +
+                        "）。这些任务下次开始时需要从 0 重新下载；正在下载与等待中的任务不受影响。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    cleanCacheConfirm = false
+                    cleanDownloadCache()
+                }) { Text("清理") }
+            },
+            dismissButton = {
+                TextButton(onClick = { cleanCacheConfirm = false }) { Text("取消") }
             }
         )
     }

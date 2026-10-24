@@ -17,6 +17,8 @@ import com.yunx.app.ui.clipboard.ClipboardLinkController
 import com.yunx.app.ui.jcef.JcefHolder
 import com.yunx.app.ui.theme.ComposeEmptyActivityTheme
 import com.yunx.app.util.DarkMode
+import com.yunx.app.util.DesktopActions
+import com.yunx.app.util.RenderApiChooser
 import com.yunx.app.util.TrayManager
 import com.yunx.app.util.Win32PopupMenu
 import com.yunx.app.util.WindowFx
@@ -28,15 +30,19 @@ fun main(args: Array<String>) {
     // ~10 FPS 且 UI 线程饱和；DIRECT3D 动画流畅但文字灰度发虚且 hinting 调节无效；
     // OPENGL（ANGLE）两者兼顾。如需其他后端可设 YUNXPC_RENDER_API=SOFTWARE / DIRECT3D。
     val osName = System.getProperty("os.name", "").lowercase()
-    if (osName.contains("win")) {
-        System.setProperty(
-            "skiko.renderApi",
-            System.getenv("YUNXPC_RENDER_API")?.takeIf { it.isNotBlank() } ?: "OPENGL"
-        )
-    }
 
     // 桌面上下文初始化（数据目录等）
     AppContext.init()
+
+    // ★ 老旧 / 基础显示适配器（如 ATI Radeon 3000）上，OPENGL(ANGLE) 会出现「界面有形状、
+    //   但一个文字都不渲染」，这类设备由 [RenderApiChooser] 自动退到 SOFTWARE。
+    //   必须在创建任何窗口 / Skiko 初始化之前设置；环境变量 YUNXPC_RENDER_API 优先级更高。
+    if (osName.contains("win")) {
+        val renderApi = System.getenv("YUNXPC_RENDER_API")?.takeIf { it.isNotBlank() }
+            ?: RenderApiChooser.chooseWindows()
+        com.yunx.app.util.Log.i("YunX-Render", "渲染后端：$renderApi")
+        System.setProperty("skiko.renderApi", renderApi)
+    }
     // 诊断日志：读开关（默认关）并定好落盘目录；开着才起写线程，关着这里几乎零开销
     runCatching { com.yunx.app.util.DiagnosticLog.install() }
     // 下载调试：读开关（默认关）。必须在任何下载开始之前装配，否则开关打开后先建的任务收不到事件
@@ -141,7 +147,7 @@ fun main(args: Array<String>) {
                 TrayManager.loadTrayIcon()?.let { icon ->
                     TrayManager.install(
                         image = icon,
-                        onLeftClick = { showMainWindowFromTray(mainWindow) },
+                        onLeftClick = { DesktopActions.bringWindowToFront(mainWindow) },
                         onRightClick = { x, y ->
                             val cmd = Win32PopupMenu.show(
                                 items = listOf(
@@ -152,7 +158,7 @@ fun main(args: Array<String>) {
                                 x = x, y = y
                             )
                             when (cmd) {
-                                1 -> showMainWindowFromTray(mainWindow)
+                                1 -> DesktopActions.bringWindowToFront(mainWindow)
                                 2 -> {
                                     val w = mainWindow
                                     if (w != null) WindowFx.fadeOutThen(w) { exitApplication() }
@@ -186,24 +192,6 @@ fun main(args: Array<String>) {
             }
         }
     }
-}
-
-/**
- * 从系统托盘恢复主窗口：显示并切到前台。
- * Windows 下 toFront() 单独调用不可靠，需配合 isAlwaysOnTop 瞬时切换。
- */
-private fun showMainWindowFromTray(window: java.awt.Frame?) {
-    val w = window ?: return
-    w.isVisible = true
-    // 从最小化状态恢复（最小化到任务栏时 extendedState 含 ICONIFIED 位）
-    if (w.extendedState and java.awt.Frame.ICONIFIED != 0) {
-        w.extendedState = java.awt.Frame.NORMAL
-    }
-    val wasOnTop = w.isAlwaysOnTop
-    w.isAlwaysOnTop = true
-    w.toFront()
-    w.requestFocus()
-    w.isAlwaysOnTop = wasOnTop
 }
 
 /**

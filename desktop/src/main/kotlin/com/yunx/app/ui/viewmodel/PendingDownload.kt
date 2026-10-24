@@ -8,5 +8,7 @@ internal data class PendingDownload(
     val url: String,
     val fileName: String,
     val size: Long,
-    val headers: Map<String, String>
+    val headers: Map<String, String>,
+    /** 本次下载的保存目录（绝对路径）；空串 = 跟随全局「设置 → 储存目录」 */
+    val saveDir: String = ""
 )

@@ -42,14 +42,32 @@ class Pan123AccountViewModel(
         loginError = null
     }
 
+    /**
+     * 「添加账号」标记：网盘页账号弹窗点「添加账号」时置位，登录页关闭时清掉。
+     * 置位后这一次登录会落成新的账号行，而不是覆盖当前主账号（见 resolveAccountSlot）。
+     */
+    private var addNewAccount = false
+
+    fun beginAddAccount() { addNewAccount = true }
+
+    fun cancelAddAccount() { addNewAccount = false }
+
     /** 账号密码登录；成功返回 true（错误文案由仓库映射，绝不复述服务端原文） */
     fun login(account: String, password: String) {
         viewModelScope.launch {
             loginError = null
             isLoggingIn = true
             try {
-                val message = repository.loginWithPassword(account, password)
-                if (message != null) loginError = message
+                val message = repository.loginWithPassword(
+                    account,
+                    password,
+                    newAccount = addNewAccount
+                )
+                if (message != null) {
+                    loginError = message
+                } else {
+                    addNewAccount = false
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

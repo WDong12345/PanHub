@@ -108,8 +108,8 @@ fun AboutScreen(
                 title = "应用简介",
                 description = "云析（YunX）是一款网盘分享链接解析与高速下载工具。" +
                     "粘贴分享链接，登录网盘账号后即可浏览分享内容并直接高速下载文件。\n" +
-                    "桌面移植端：YunX-Desktop 基于 Compose Multiplatform 构建，" +
-                    "将云析完整移植到 Windows 桌面，提供与移动端一致的解析与下载体验。"
+                    "Windows 桌面端：YunX-Desktop 基于 Compose Multiplatform 构建，" +
+                    "是云析的官方电脑版，提供与安卓版一致的解析与下载体验。"
             )
             
 
@@ -474,7 +474,7 @@ private fun CardIcon(icon: ImageVector) {
     }
 }
 
-/** 原安卓项目仓库入口卡片 */
+/** 安卓版仓库入口卡片 */
 @Composable
 private fun GitHubCard() {
     Card(
@@ -510,7 +510,7 @@ private fun GitHubCard() {
             Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "原安卓项目仓库",
+                    text = "安卓版仓库",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Medium
                 )
@@ -530,7 +530,7 @@ private fun GitHubCard() {
     }
 }
 
-/** PC 移植版仓库入口卡片 */
+/** PC 版仓库入口卡片 */
 @Composable
 private fun DesktopRepoCard() {
     Card(
@@ -566,7 +566,7 @@ private fun DesktopRepoCard() {
             Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "PC 移植版仓库",
+                    text = "PC 版仓库",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Medium
                 )

@@ -31,19 +31,38 @@ internal class FileCredentialCipher : CredentialCipher {
     private val key: SecretKeySpec by lazy {
         val keyFile = DbKeyStore.keyFile(AppContext.dbDir, AppContext.dataDir)
         val level = DbEncryptionLevel.fromId(SettingsRepository().dbEncryptionLevel)
-        val bytes = runCatching { DbKeyStore.loadOrCreate(keyFile, level) }.getOrElse { e ->
-            // 密钥解不开（最典型：在「普通 / 较为严格」档下把数据拷到了别的机器/别的 Windows 用户）：
-            // 这把密钥已经不可恢复。保留原文件备查，另生成一把新密钥 —— 否则连「重新登录」都保存不了，
-            // 应用会直接变成不可用；库里那些解不开的密文由 DAO 的自愈逻辑清掉，用户重新登录即可。
-            Log.e(TAG, "凭证密钥解不开（${e.message}），改用新密钥：旧文件保留为 ${keyFile.name}.unreadable")
-            runCatching {
-                keyFile.renameTo(File(keyFile.parentFile, "${keyFile.name}.unreadable"))
-            }
-            DbKeyStore.loadOrCreate(keyFile, level)
-        }
+        val bytes = loadKeyWithRetry(keyFile, level)
         require(bytes.size == 32) { "invalid credential key file" }
         SecretKeySpec(bytes, "AES")
     }
+
+    /**
+     * 读取主密钥；**只有确认密钥彻底不可恢复时才换新密钥**（对齐上游 #179「凭证加固」）。
+     *
+     * 旧实现只要 `loadOrCreate` 抛异常就改名 + 新建：密钥文件被杀毒软件占用、DPAPI 一时失败、
+     * 机器标识临时读不到……都会触发，于是库里的全部凭证永久解不开 —— 这正是「账号全丢」事故。
+     * 现在：先原样重试一次；仍失败时区分
+     * - **暂时不可用**（IO 失败 / 机器标识临时缺失）：直接向上抛，不换密钥、不动文件，下次读取自动重试；
+     * - **确实解不开**（换机器 / 换 Windows 用户 / 封装格式损坏）：旧密钥本来就已经废了，才换新。
+     */
+    private fun loadKeyWithRetry(keyFile: File, level: DbEncryptionLevel): ByteArray {
+        runCatching { DbKeyStore.loadOrCreate(keyFile, level) }.getOrNull()?.let { return it }
+        val retry = runCatching { DbKeyStore.loadOrCreate(keyFile, level) }
+        retry.getOrNull()?.let { return it }
+
+        val error = retry.exceptionOrNull() ?: IllegalStateException("credential key unavailable")
+        if (isTransient(error)) throw error
+
+        Log.e(TAG, "凭证密钥确实解不开（${error.message}），改用新密钥：旧文件保留为 ${keyFile.name}.unreadable")
+        runCatching {
+            keyFile.renameTo(File(keyFile.parentFile, "${keyFile.name}.unreadable"))
+        }
+        return DbKeyStore.loadOrCreate(keyFile, level)
+    }
+
+    /** 暂时性失败（读不到 / 被占用 / 机器标识临时缺失）：本次失败即可，绝不能据此换密钥 */
+    private fun isTransient(error: Throwable): Boolean =
+        error is DbKeyStore.MachineFingerprintUnavailable || error is java.io.IOException
 
     override fun encrypt(plaintext: String, purpose: String): String {
         // 诊断日志只记「用途 + 明文长度」，绝不打明文/密文本身

@@ -42,14 +42,6 @@ object SystemProxy {
         data object Unavailable : Inspect
     }
 
-    /** 注册表原始值快照（供诊断 / 验证打印） */
-    data class Raw(
-        val proxyEnable: Int?,
-        val proxyServer: String?,
-        val autoConfigUrl: String?,
-        val proxyOverride: String?
-    )
-
     private val isWindows: Boolean
         get() = System.getProperty("os.name", "").lowercase().contains("win")
 
@@ -67,17 +59,6 @@ object SystemProxy {
         val pac = readString("AutoConfigURL")
         val override = readString("ProxyOverride")
         return parse(enable, server, pac, override)
-    }
-
-    /** 读取注册表原始值（供诊断/验证打印）；非 Windows 平台返回 null */
-    fun readRaw(): Raw? {
-        if (!isWindows) return null
-        return Raw(
-            proxyEnable = readInt("ProxyEnable"),
-            proxyServer = readString("ProxyServer"),
-            autoConfigUrl = readString("AutoConfigURL"),
-            proxyOverride = readString("ProxyOverride")
-        )
     }
 
     /**

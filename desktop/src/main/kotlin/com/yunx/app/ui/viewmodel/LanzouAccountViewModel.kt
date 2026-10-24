@@ -26,12 +26,29 @@ class LanzouAccountViewModel(
             initialValue = null
         )
 
+    /**
+     * 「添加账号」标记：网盘页账号弹窗点「添加账号」时置位，登录页关闭时清掉。
+     * 置位后这一次登录会落成新的账号行，而不是覆盖当前主账号（见 resolveAccountSlot）。
+     */
+    private var addNewAccount = false
+
+    fun beginAddAccount() { addNewAccount = true }
+
+    fun cancelAddAccount() { addNewAccount = false }
+
     /** 校验并保存 Cookie；返回是否成功（供手动粘贴 Cookie 的备用入口使用）。 */
-    suspend fun saveCookie(cookie: String): Boolean = repository.saveCookie(cookie)
+    suspend fun saveCookie(cookie: String): Boolean {
+        val saved = repository.saveCookie(cookie, newAccount = addNewAccount)
+        if (saved) addNewAccount = false
+        return saved
+    }
 
     /** 原生账号密码登录（官网接口 + 人机校验）；成功返回账号实体。 */
-    suspend fun login(account: String, password: String): Result<LanzouAccountEntity> =
-        repository.login(account, password)
+    suspend fun login(account: String, password: String): Result<LanzouAccountEntity> {
+        val result = repository.login(account, password, newAccount = addNewAccount)
+        if (result.isSuccess) addNewAccount = false
+        return result
+    }
 
     fun logout() {
         viewModelScope.launch { repository.logout() }

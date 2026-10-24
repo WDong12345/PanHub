@@ -2,6 +2,8 @@ package com.yunx.app.data.repository
 
 import com.yunx.app.data.db.GuangYaAccountDao
 import com.yunx.app.data.db.GuangYaAccountEntity
+import com.yunx.app.data.db.resolveAccountSlot
+import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.GuangYaApi
 import com.yunx.app.data.network.GuangYaConstants
 import com.yunx.app.data.network.GuangYaDevice
@@ -38,22 +40,33 @@ class GuangYaAccountRepository(
 
     suspend fun getAccount(): GuangYaAccountEntity? = dao.getAccount().also { cachedDeviceId = it?.deviceId }
 
+    /** 该平台全部账号可用的凭证（主账号在前）：多账号下载（实验性 C1）轮换取链用 */
+    suspend fun allCredentials(): List<String> =
+        dao.getAccounts().map { it.accessToken }.filter { it.isNotBlank() }
+
     /** 账号密码登录并落库；返回最终写入的实体。 */
-    suspend fun login(account: String, password: String): Result<GuangYaAccountEntity> = runCatching {
+    suspend fun login(
+        account: String,
+        password: String,
+        newAccount: Boolean = false
+    ): Result<GuangYaAccountEntity> = runCatching {
         val existing = dao.getAccount()
         val device = deviceOf(existing)
         cachedDeviceId = device.deviceId
         val tokens = api.signIn(account, password, device)
         accessExpiresAt = expiryOf(tokens)
         val info = api.fetchAccountInfo(tokens.accessToken, device)
+        val slot = resolveAccountSlot(DownloadPlatform.GUANGYA, existing, newAccount)
         val entity = GuangYaAccountEntity(
-            id = "guangya",
+            id = slot.id,
             accessToken = tokens.accessToken,
             refreshToken = tokens.refreshToken.ifBlank { existing?.refreshToken.orEmpty() },
             deviceId = device.deviceId,
             deviceSign = device.deviceSign,
             account = account.trim(),
-            nickname = info?.nickname.orEmpty().ifBlank { account.trim() }
+            nickname = info?.nickname.orEmpty().ifBlank { account.trim() },
+            isPrimary = slot.isPrimary,
+            remark = slot.remark
         )
         dao.upsert(entity)
         entity
@@ -73,7 +86,8 @@ class GuangYaAccountRepository(
         phoneNumber: String,
         verificationId: String,
         code: String,
-        isUser: Boolean
+        isUser: Boolean,
+        newAccount: Boolean = false
     ): Result<GuangYaAccountEntity> = runCatching {
         val existing = dao.getAccount()
         val device = deviceOf(existing)
@@ -87,14 +101,17 @@ class GuangYaAccountRepository(
         }
         accessExpiresAt = expiryOf(tokens)
         val info = api.fetchAccountInfo(tokens.accessToken, device)
+        val slot = resolveAccountSlot(DownloadPlatform.GUANGYA, existing, newAccount)
         val entity = GuangYaAccountEntity(
-            id = "guangya",
+            id = slot.id,
             accessToken = tokens.accessToken,
             refreshToken = tokens.refreshToken.ifBlank { existing?.refreshToken.orEmpty() },
             deviceId = device.deviceId,
             deviceSign = device.deviceSign,
             account = normalized,
-            nickname = info?.nickname.orEmpty().ifBlank { normalized }
+            nickname = info?.nickname.orEmpty().ifBlank { normalized },
+            isPrimary = slot.isPrimary,
+            remark = slot.remark
         )
         dao.upsert(entity)
         entity
