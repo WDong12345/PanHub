@@ -36,6 +36,7 @@ class AppDatabase private constructor(private val conn: Connection) {
     private val rawGuangYa = JdbcGuangYaAccountDao(conn)
     private val rawILanzou = JdbcILanzouAccountDao(conn)
     private val rawLanzou = JdbcLanzouAccountDao(conn)
+    private val rawVideo = JdbcVideoAccountDao(conn)
     private val rawDownloadTask = JdbcDownloadTaskDao(conn)
     private val rawBookmark = JdbcBookmarkDao(conn)
     private val rawLinkHistory = JdbcLinkHistoryDao(conn)
@@ -50,6 +51,7 @@ class AppDatabase private constructor(private val conn: Connection) {
     fun guangyaAccountDao(): GuangYaAccountDao = SecureAccountDaos.guangya(rawGuangYa, credentialCipher)
     fun ilanzouAccountDao(): ILanzouAccountDao = SecureAccountDaos.ilanzou(rawILanzou, credentialCipher)
     fun lanzouAccountDao(): LanzouAccountDao = SecureAccountDaos.lanzou(rawLanzou, credentialCipher)
+    fun videoAccountDao(): VideoAccountDao = SecureAccountDaos.videoAccount(rawVideo, credentialCipher)
     fun downloadTaskDao(): DownloadTaskDao = rawDownloadTask
     fun bookmarkDao(): BookmarkDao = rawBookmark
     fun linkHistoryDao(): LinkHistoryDao = rawLinkHistory
@@ -70,6 +72,28 @@ class AppDatabase private constructor(private val conn: Connection) {
             // 数据库目录可在「设置 → 储存目录」改（默认＝数据根目录）；启动时已由 AppContext 解析好
             val dbFile = File(AppContext.dbDir, "yunx.db")
             dbFile.parentFile?.mkdirs()
+
+            // ==== TEMP DIAG (remove) ====
+            System.err.println("[YunX-DIAG] dataDir=" + AppContext.dataDir.absolutePath)
+            System.err.println("[YunX-DIAG] dbDir=" + AppContext.dbDir.absolutePath)
+            System.err.println("[YunX-DIAG] dbFile=" + dbFile.absolutePath + " exists=" + dbFile.exists() +
+                " isFile=" + dbFile.isFile + " len=" + dbFile.length() +
+                " canRead=" + dbFile.canRead() + " canWrite=" + dbFile.canWrite())
+            System.err.println("[YunX-DIAG] dbDir exists=" + AppContext.dbDir.exists() +
+                " isDir=" + AppContext.dbDir.isDirectory + " canWrite=" + AppContext.dbDir.canWrite())
+            System.err.println("[YunX-DIAG] userHome=" + System.getProperty("user.home") +
+                " userDir=" + System.getProperty("user.dir") +
+                " tmpdir=" + System.getProperty("java.io.tmpdir") +
+                " jnu=" + System.getProperty("sun.jnu.encoding") +
+                " fileEnc=" + System.getProperty("file.encoding"))
+            System.err.println("[YunX-DIAG] envYunxDataDir=" + System.getenv("YUNX_DESKTOP_DATA_DIR"))
+            runCatching {
+                val wal = File(AppContext.dbDir, "yunx.db-wal")
+                val created = wal.createNewFile()
+                System.err.println("[YunX-DIAG] createWal created=" + created + " exists=" + wal.exists())
+                runCatching { wal.delete() }
+            }.onFailure { System.err.println("[YunX-DIAG] createWal FAILED: " + it) }
+            // ==== END TEMP DIAG ====
 
             // 自愈：进程被强杀/崩溃后，WAL 的 -shm（共享内存索引）可能损坏或 mmap 失败
             // （SQLITE_IOERR_SHMMAP），表现为应用启动即崩。-shm 可由 sqlite 随时重建
@@ -123,6 +147,22 @@ class AppDatabase private constructor(private val conn: Connection) {
                             it.execute("ALTER TABLE download_task ADD COLUMN directMode INTEGER NOT NULL DEFAULT 0")
                         }
                     }
+                    // 迁移：DASH 分轨下载（哔哩哔哩高清）与动图合成所需的三列
+                    runCatching {
+                        conn.createStatement().use {
+                            it.execute("ALTER TABLE download_task ADD COLUMN mergeAudioUrl TEXT NOT NULL DEFAULT ''")
+                        }
+                    }
+                    runCatching {
+                        conn.createStatement().use {
+                            it.execute("ALTER TABLE download_task ADD COLUMN mergeAudioHeadersJson TEXT NOT NULL DEFAULT ''")
+                        }
+                    }
+                    runCatching {
+                        conn.createStatement().use {
+                            it.execute("ALTER TABLE download_task ADD COLUMN motionUrl TEXT NOT NULL DEFAULT ''")
+                        }
+                    }
                     // 迁移：旧库缺少 authType 列时补上（迅雷登录方式；空串=App 通道，webToken=网页登录）
                     runCatching {
                         conn.createStatement().use {
@@ -150,6 +190,10 @@ class AppDatabase private constructor(private val conn: Connection) {
                     lastError = e
                     runCatching { conn?.close() }
                     Log.e(TAG, "database open attempt ${attempt + 1} failed: ${e.message}")
+                    // ==== TEMP DIAG (remove) ====
+                    System.err.println("[YunX-DIAG] attempt=" + (attempt + 1) + " connNull=" + (conn == null))
+                    e.printStackTrace()
+                    // ==== END TEMP DIAG ====
                     runCatching {
                         when (attempt) {
                             0 -> {
@@ -223,7 +267,8 @@ class AppDatabase private constructor(private val conn: Connection) {
             "CREATE TABLE IF NOT EXISTS guangya_account (id TEXT PRIMARY KEY NOT NULL, accessToken TEXT NOT NULL, refreshToken TEXT NOT NULL, deviceId TEXT NOT NULL, deviceSign TEXT NOT NULL, account TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
             "CREATE TABLE IF NOT EXISTS ilanzou_account (id TEXT PRIMARY KEY NOT NULL, appToken TEXT NOT NULL, uuid TEXT NOT NULL, account TEXT NOT NULL, password TEXT NOT NULL, userId TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
             "CREATE TABLE IF NOT EXISTS lanzou_account (id TEXT PRIMARY KEY NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
-            "CREATE TABLE IF NOT EXISTS download_task (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, fileName TEXT NOT NULL, totalSize INTEGER NOT NULL, downloadedSize INTEGER NOT NULL, status INTEGER NOT NULL, errorMsg TEXT NOT NULL, savePath TEXT NOT NULL, requestHeadersJson TEXT NOT NULL DEFAULT '{}', chunkCount INTEGER NOT NULL DEFAULT 0, plannedTotalSize INTEGER NOT NULL DEFAULT 0, cleanupId TEXT NOT NULL DEFAULT '', platform TEXT NOT NULL DEFAULT '', shareUrl TEXT NOT NULL DEFAULT '', avgSpeed INTEGER NOT NULL DEFAULT 0, engineTaskId TEXT NOT NULL DEFAULT '', altSourcesJson TEXT NOT NULL DEFAULT '', saveDir TEXT NOT NULL DEFAULT '', directPart TEXT NOT NULL DEFAULT '', directMode INTEGER NOT NULL DEFAULT 0, createTime INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS video_account (id TEXT PRIMARY KEY NOT NULL, platform TEXT NOT NULL, cookie TEXT NOT NULL, nickname TEXT NOT NULL, updatedAt INTEGER NOT NULL, isPrimary INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '')",
+            "CREATE TABLE IF NOT EXISTS download_task (id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, fileName TEXT NOT NULL, totalSize INTEGER NOT NULL, downloadedSize INTEGER NOT NULL, status INTEGER NOT NULL, errorMsg TEXT NOT NULL, savePath TEXT NOT NULL, requestHeadersJson TEXT NOT NULL DEFAULT '{}', chunkCount INTEGER NOT NULL DEFAULT 0, plannedTotalSize INTEGER NOT NULL DEFAULT 0, cleanupId TEXT NOT NULL DEFAULT '', platform TEXT NOT NULL DEFAULT '', shareUrl TEXT NOT NULL DEFAULT '', avgSpeed INTEGER NOT NULL DEFAULT 0, engineTaskId TEXT NOT NULL DEFAULT '', altSourcesJson TEXT NOT NULL DEFAULT '', saveDir TEXT NOT NULL DEFAULT '', directPart TEXT NOT NULL DEFAULT '', directMode INTEGER NOT NULL DEFAULT 0, mergeAudioUrl TEXT NOT NULL DEFAULT '', mergeAudioHeadersJson TEXT NOT NULL DEFAULT '', motionUrl TEXT NOT NULL DEFAULT '', createTime INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS bookmark (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, link TEXT NOT NULL, title TEXT NOT NULL, platform TEXT NOT NULL, pwd TEXT NOT NULL, category TEXT NOT NULL, createTime INTEGER NOT NULL)",
             "CREATE TABLE IF NOT EXISTS link_history (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, url TEXT NOT NULL, title TEXT NOT NULL, platform TEXT NOT NULL, pwd TEXT NOT NULL, createTime INTEGER NOT NULL)"
         )
@@ -700,6 +745,183 @@ private class JdbcLanzouAccountDao(conn: Connection) : LanzouAccountDao {
     override suspend fun clear() = dbIo { d.clear() }
 }
 
+/**
+ * `video_account` 专用 DAO。
+ *
+ * 与 [JdbcAccountTable] 的区别：这张表里**所有视频平台共用**，所以设主账号、清空账号都必须带
+ * `platform` 条件，不能像单平台表那样整表 UPDATE。主账号唯一性也按平台各自维护。
+ */
+private class JdbcVideoAccountDao(private val conn: Connection) : VideoAccountDao {
+
+    private val _rows = MutableStateFlow<List<VideoAccountEntity>>(emptyList())
+
+    init {
+        _rows.value = loadAll()
+    }
+
+    override fun observeAccounts(): Flow<List<VideoAccountEntity>> = _rows
+
+    override fun observeAccountsOf(platform: String): Flow<List<VideoAccountEntity>> =
+        _rows.map { list -> list.filter { it.platform == platform } }
+
+    override suspend fun getAccounts(): List<VideoAccountEntity> = dbIo { loadAll() }
+
+    override suspend fun getActive(platform: String): VideoAccountEntity? =
+        dbIo { loadOf(platform).firstOrNull() }
+
+    override suspend fun countOf(platform: String): Int = dbIo { countRows(platform) }
+
+    override suspend fun upsert(account: VideoAccountEntity) = dbIo { upsertRaw(account) }
+
+    override suspend fun setPrimary(platform: String, id: String) = dbIo { setPrimaryRaw(platform, id) }
+
+    override suspend fun updateRemark(id: String, remark: String) = dbIo { updateRemarkRaw(id, remark) }
+
+    override suspend fun deleteById(id: String) = dbIo { deleteRaw(id) }
+
+    override suspend fun clearPlatform(platform: String) = dbIo { clearRaw(platform) }
+
+    // ------------------------------------------------------------------ 内部实现
+
+    private fun read(rs: ResultSet) = VideoAccountEntity(
+        id = rs.getString("id"),
+        platform = rs.getString("platform"),
+        cookie = rs.getString("cookie"),
+        nickname = rs.getString("nickname"),
+        updatedAt = rs.getLong("updatedAt"),
+        isPrimary = rs.getInt("isPrimary") != 0,
+        remark = rs.getString("remark")
+    )
+
+    private fun loadAll(): List<VideoAccountEntity> = synchronized(conn) {
+        conn.prepareStatement(
+            "SELECT * FROM video_account ORDER BY platform ASC, isPrimary DESC, updatedAt DESC"
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                val out = mutableListOf<VideoAccountEntity>()
+                while (rs.next()) out += read(rs)
+                out
+            }
+        }
+    }
+
+    private fun loadOf(platform: String): List<VideoAccountEntity> = synchronized(conn) {
+        conn.prepareStatement(
+            "SELECT * FROM video_account WHERE platform = ? ORDER BY isPrimary DESC, updatedAt DESC"
+        ).use { ps ->
+            ps.setString(1, platform)
+            ps.executeQuery().use { rs ->
+                val out = mutableListOf<VideoAccountEntity>()
+                while (rs.next()) out += read(rs)
+                out
+            }
+        }
+    }
+
+    private fun countRows(platform: String): Int = synchronized(conn) {
+        conn.prepareStatement("SELECT COUNT(*) FROM video_account WHERE platform = ?").use { ps ->
+            ps.setString(1, platform)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+    }
+
+    private fun upsertRaw(value: VideoAccountEntity) {
+        synchronized(conn) {
+            if (value.isPrimary) {
+                conn.prepareStatement("UPDATE video_account SET isPrimary = 0 WHERE platform = ?").use { ps ->
+                    ps.setString(1, value.platform)
+                    ps.executeUpdate()
+                }
+            }
+            conn.prepareStatement(
+                "INSERT OR REPLACE INTO video_account (id,platform,cookie,nickname,updatedAt,isPrimary,remark) " +
+                    "VALUES(?,?,?,?,?,?,?)"
+            ).use { ps ->
+                ps.setString(1, value.id)
+                ps.setString(2, value.platform)
+                ps.setString(3, value.cookie)
+                ps.setString(4, value.nickname)
+                ps.setLong(5, value.updatedAt)
+                ps.setInt(6, if (value.isPrimary) 1 else 0)
+                ps.setString(7, value.remark)
+                ps.executeUpdate()
+            }
+            ensurePrimaryExists(value.platform)
+        }
+        _rows.value = loadAll()
+    }
+
+    private fun setPrimaryRaw(platform: String, id: String) {
+        synchronized(conn) {
+            conn.prepareStatement("UPDATE video_account SET isPrimary = 0 WHERE platform = ?").use { ps ->
+                ps.setString(1, platform)
+                ps.executeUpdate()
+            }
+            conn.prepareStatement("UPDATE video_account SET isPrimary = 1 WHERE platform = ? AND id = ?").use { ps ->
+                ps.setString(1, platform)
+                ps.setString(2, id)
+                ps.executeUpdate()
+            }
+        }
+        _rows.value = loadAll()
+    }
+
+    private fun updateRemarkRaw(id: String, remark: String) {
+        synchronized(conn) {
+            conn.prepareStatement("UPDATE video_account SET remark = ? WHERE id = ?").use { ps ->
+                ps.setString(1, remark)
+                ps.setString(2, id)
+                ps.executeUpdate()
+            }
+        }
+        _rows.value = loadAll()
+    }
+
+    private fun deleteRaw(id: String) {
+        synchronized(conn) {
+            val platform = conn.prepareStatement("SELECT platform FROM video_account WHERE id = ?").use { ps ->
+                ps.setString(1, id)
+                ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+            conn.prepareStatement("DELETE FROM video_account WHERE id = ?").use { ps ->
+                ps.setString(1, id)
+                ps.executeUpdate()
+            }
+            if (platform != null) ensurePrimaryExists(platform)
+        }
+        _rows.value = loadAll()
+    }
+
+    private fun clearRaw(platform: String) {
+        synchronized(conn) {
+            conn.prepareStatement("DELETE FROM video_account WHERE platform = ?").use { ps ->
+                ps.setString(1, platform)
+                ps.executeUpdate()
+            }
+        }
+        _rows.value = loadAll()
+    }
+
+    /** 该平台一条主账号都没有时，把最近更新的那条补成主账号（不影响其它平台） */
+    private fun ensurePrimaryExists(platform: String) {
+        val hasPrimary = conn.prepareStatement(
+            "SELECT COUNT(*) FROM video_account WHERE platform = ? AND isPrimary = 1"
+        ).use { ps ->
+            ps.setString(1, platform)
+            ps.executeQuery().use { rs -> rs.next() && rs.getInt(1) > 0 }
+        }
+        if (hasPrimary) return
+        conn.prepareStatement(
+            "UPDATE video_account SET isPrimary = 1 WHERE platform = ? AND id = (" +
+                "SELECT id FROM video_account WHERE platform = ? ORDER BY updatedAt DESC LIMIT 1)"
+        ).use { ps ->
+            ps.setString(1, platform)
+            ps.setString(2, platform)
+            ps.executeUpdate()
+        }
+    }
+}
+
 private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDao {
 
     private val _tasks = MutableStateFlow<List<DownloadTaskEntity>>(emptyList())
@@ -748,6 +970,10 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
         // 实验性直写：旧库迁移期间列可能尚未添加
         directPart = runCatching { rs.getString("directPart") }.getOrDefault(""),
         directMode = runCatching { rs.getInt("directMode") }.getOrDefault(0),
+        // DASH 分轨 / 动图：旧库迁移期间列可能尚未添加
+        mergeAudioUrl = runCatching { rs.getString("mergeAudioUrl") }.getOrDefault(""),
+        mergeAudioHeadersJson = runCatching { rs.getString("mergeAudioHeadersJson") }.getOrDefault(""),
+        motionUrl = runCatching { rs.getString("motionUrl") }.getOrDefault(""),
         createTime = rs.getLong("createTime")
     )
 
@@ -758,8 +984,8 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
             conn.prepareStatement(
                 "INSERT INTO download_task(url,fileName,totalSize,downloadedSize,status,errorMsg,savePath," +
                     "requestHeadersJson,chunkCount,plannedTotalSize,cleanupId,platform,shareUrl,avgSpeed,engineTaskId," +
-                    "altSourcesJson,saveDir,directPart,directMode,createTime) " +
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "altSourcesJson,saveDir,directPart,directMode,mergeAudioUrl,mergeAudioHeadersJson,motionUrl,createTime) " +
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 Statement.RETURN_GENERATED_KEYS
             ).use { ps ->
                 ps.setString(1, task.url)
@@ -781,7 +1007,10 @@ private class JdbcDownloadTaskDao(private val conn: Connection) : DownloadTaskDa
                 ps.setString(17, task.saveDir)
                 ps.setString(18, task.directPart)
                 ps.setInt(19, task.directMode)
-                ps.setLong(20, task.createTime)
+                ps.setString(20, task.mergeAudioUrl)
+                ps.setString(21, task.mergeAudioHeadersJson)
+                ps.setString(22, task.motionUrl)
+                ps.setLong(23, task.createTime)
                 ps.executeUpdate()
                 ps.generatedKeys.use { gk -> if (gk.next()) gk.getLong(1) else task.id }
             }

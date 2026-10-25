@@ -55,19 +55,6 @@ class QuarkResolveRepository(private val api: QuarkApi) : ShareResolveRepository
             onFailure = { Result.failure(it) }
         )
 
-    /** 列个人网盘目录（转存后原地续下文件夹用）；分页与网盘页一致，目录在前可早停 */
-    suspend fun listPersonalFiles(dirFid: String, cookie: String): List<ShareFile> {
-        val all = mutableListOf<ShareFile>()
-        var page = 1
-        while (page <= 20) {
-            val batch = api.listCloudFiles(dirFid, cookie, page, 100) ?: break
-            all += batch
-            if (batch.size < 100) break
-            page++
-        }
-        return all
-    }
-
     /**
      * 确保「YunX临时转存」目录存在，返回其 fid；不存在则创建。
      */
@@ -232,25 +219,36 @@ class QuarkResolveRepository(private val api: QuarkApi) : ShareResolveRepository
         runCatching { api.deleteFile(dirFid, cookie) }
     }
 
+    /** 列个人网盘目录（转存后原地续下文件夹用）；分页与网盘页一致 */
+    suspend fun listPersonalFiles(dirFid: String, cookie: String): List<ShareFile> {
+        val all = mutableListOf<ShareFile>()
+        var page = 1
+        while (page <= 20) {
+            val batch = api.listCloudFiles(dirFid, cookie, page, 100) ?: break
+            all += batch
+            if (batch.size < 100) break
+            page++
+        }
+        return all
+    }
+
     /**
      * 启动清理：删掉「YunX临时转存」里遗留的 tr_* 子目录，返回清理掉的目录数。
-     *
-     * 为什么会遗留：临时目录由「下载完成回调」和「关闭取链弹窗」删除，两份都是内存态闭包；
-     * 进程被杀或重启后续跑的任务不再有回调，目录就一直留在用户网盘里。
-     * [keepFids] 取自数据库里仍未完成下载的任务（download_task.cleanupId），这些目录还在被引用，
-     * 删了会把正在下的直链打成 404，绝对不动。
-     * 只认 tr_ 前缀的子目录，用户自己放进该目录的东西一律不碰；删除走夸克回收站，可还原。
+     * [keepFids] 取自未完成下载任务的 download_task.cleanupId，这些目录仍被引用，绝不能删。
+     * 只认 tr_ 前缀，用户自己放进该目录的东西一律不碰。
      */
     suspend fun sweepLeftoverTempDirs(cookie: String, keepFids: Set<String>): Int = runCatching {
         val root = api.getFileList(QuarkConstants.DEFAULT_PDIR_FID, cookie) ?: return 0
-        // 只找已存在的临时根目录：没有遗留可言时不该在用户网盘里建目录
         val tempRoot = root.firstOrNull { it.isdir && it.fname == QuarkConstants.TEMP_DIR_NAME } ?: return 0
         val leftovers = api.getFileList(tempRoot.fid, cookie)
             ?.filter { it.isdir && it.fname.startsWith(QuarkConstants.TEMP_SUBDIR_PREFIX) && it.fid !in keepFids }
             ?: return 0
         if (leftovers.isEmpty()) return 0
-        api.deleteFiles(leftovers.map { it.fid }, cookie) ?: return 0
-        leftovers.size
+        var removed = 0
+        for (dir in leftovers) {
+            if (api.deleteFile(dir.fid, cookie) != null) removed++
+        }
+        removed
     }.getOrDefault(0)
 
     private companion object {

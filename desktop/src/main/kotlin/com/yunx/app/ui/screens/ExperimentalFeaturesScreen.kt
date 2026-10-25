@@ -406,7 +406,6 @@ fun ExperimentalFeaturesScreen(
                 },
                 trailing = { Switch(checked = homeShortcut, onCheckedChange = null) }
             )
-
             Spacer(modifier = Modifier.height(24.dp))
 
             // 底部重置按钮：二次确认后恢复本页全部默认值

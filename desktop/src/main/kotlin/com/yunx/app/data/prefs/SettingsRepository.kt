@@ -90,8 +90,7 @@ class SettingsRepository {
 
     /**
      * 下载时同时保存到网盘（默认关闭，仅夸克）。
-     * 夸克免转存路径本身不写网盘，勾选后改为「转存到网盘 → 用新 fid 继续下载」，
-     * 一次转存既保存又下载，不会转存两次；其它平台不支持装存后直接续下，不显示该选项。
+     * 勾选后下载改为「转存到网盘 → 用新 fid 继续下载」，一次转存既保存又下载。
      */
     var saveToCloudOnDownload: Boolean
         get() = prefs.getBoolean("save_to_cloud_on_download", false)
@@ -105,6 +104,8 @@ class SettingsRepository {
         set(value) {
             prefs.putBoolean("clipboard_link_detection", value)
         }
+
+    /** 接受预发布版更新：检查更新时把 GitHub Pre-release 也算作新版本（默认关闭） */
     var acceptPrereleaseUpdate: Boolean
         get() = prefs.getBoolean("accept_prerelease_update", false)
         set(value) {
@@ -217,6 +218,16 @@ class SettingsRepository {
             prefs.putInt("theme_color_mode", value.coerceIn(0, 2))
         }
 
+    /**
+     * 「减少动画」开关（设置 → 主题与外观 → 动效）：默认关。
+     * 开启后关闭页面切换位移、列表增删等装饰性动画（与软件渲染判定取「或」，见 MotionPolicy）。
+     */
+    var reduceMotion: Boolean
+        get() = prefs.getBoolean("reduce_motion", false)
+        set(value) {
+            prefs.putBoolean("reduce_motion", value)
+        }
+
     /** 自定义主题种子色（ARGB 值） */
     var themeSeedColor: Long
         get() = prefs.getLong("theme_seed_color", DEFAULT_SEED_COLOR)
@@ -225,13 +236,27 @@ class SettingsRepository {
         }
 
     /**
-     * 自定义 GitHub 下载镜像前缀（如 "https://gh.dpik.top/"）。
-     * null/空字符串表示使用内置默认镜像（UpdateChecker.MIRROR_PREFIX）。
+     * 固定使用的 GitHub 下载镜像前缀（预选镜像或用户自定义，如 "https://gh.dpik.top/"）。
+     * null/空字符串表示「自动」：由 GitHubMirror 实测各预选镜像、选最快的一个。
      */
     var githubMirrorPrefix: String?
         get() = prefs.get("github_mirror_prefix", null)
         set(value) {
             if (value.isNullOrBlank()) prefs.remove("github_mirror_prefix") else prefs.put("github_mirror_prefix", value)
+        }
+
+    /** 最近一次镜像测速得到的最快前缀（缓存，避免每次启动都重新测速）；null 表示尚未测过 */
+    var githubMirrorFastest: String?
+        get() = prefs.get("github_mirror_fastest", null)
+        set(value) {
+            if (value.isNullOrBlank()) prefs.remove("github_mirror_fastest") else prefs.put("github_mirror_fastest", value)
+        }
+
+    /** 最近一次镜像测速完成的时间戳（毫秒）；0 表示从未测过 */
+    var githubMirrorProbedAt: Long
+        get() = prefs.getLong("github_mirror_probed_at", 0L)
+        set(value) {
+            prefs.putLong("github_mirror_probed_at", value)
         }
 
     /**
@@ -407,6 +432,40 @@ class SettingsRepository {
     }
 
     /**
+     * 视频预览引擎选择（见「设置 → 引擎管理 → 视频预览引擎」）：
+     * - [PREVIEW_AUTO]（默认）：能拿到 ffplay 就优先用（真·在线预览），否则回退内置 JavaFX；
+     * - [PREVIEW_JAVA_FX]：始终用内置 JavaFX `MediaView`（需先落盘，兼容性最好）；
+     * - [PREVIEW_FFPLAY]：强制用 ffplay 子进程（缺失时会提示下载 ffmpeg）。
+     * 非法值（手改偏好）一律按自动处理。
+     */
+    var previewEngine: String
+        get() = when (prefs.get("preview_engine", PREVIEW_AUTO)) {
+            PREVIEW_JAVA_FX -> PREVIEW_JAVA_FX
+            PREVIEW_FFPLAY -> PREVIEW_FFPLAY
+            else -> PREVIEW_AUTO
+        }
+        set(value) {
+            prefs.put(
+                "preview_engine",
+                when (value) {
+                    PREVIEW_JAVA_FX -> PREVIEW_JAVA_FX
+                    PREVIEW_FFPLAY -> PREVIEW_FFPLAY
+                    else -> PREVIEW_AUTO
+                }
+            )
+        }
+
+    /**
+     * 是否已提醒过用户安装 ffmpeg 引擎（视频预览与 DASH 合轨共用同一标记）。
+     * 首次遇到「缺引擎」时弹一次提示，之后不再自动打扰；用户后来装了引擎会自动启用。
+     */
+    var ffmpegEngineAsked: Boolean
+        get() = prefs.getBoolean("ffmpeg_engine_asked", false)
+        set(value) {
+            prefs.putBoolean("ffmpeg_engine_asked", value)
+        }
+
+    /**
      * 重置「实验性功能」页全部设置为默认值：
      * HTTP/2 关闭、读缓冲 64KB、慢连接抢占开启（12KB/s、15s）、主页快捷方式关闭、
      * 多账号下载 / 单文件多源分片关闭。
@@ -450,6 +509,13 @@ class SettingsRepository {
         const val ENGINE_BUILTIN = "builtin"
         /** 下载引擎：外部 Gopeed 引擎（exe 子进程 + 本地 HTTP API） */
         const val ENGINE_GOPEED = "gopeed"
+
+        /** 预览引擎：自动（有 ffplay 就用，否则回退内置 JavaFX）—— 默认 */
+        const val PREVIEW_AUTO = "auto"
+        /** 预览引擎：内置 JavaFX MediaView（需先落盘，兼容性最好） */
+        const val PREVIEW_JAVA_FX = "javafx"
+        /** 预览引擎：ffplay 子进程（真·在线预览，需 ffmpeg） */
+        const val PREVIEW_FFPLAY = "ffplay"
 
         const val DEFAULT_DOWNLOAD_THREADS = 32
         const val MAX_DOWNLOAD_THREADS = 512

@@ -1,10 +1,14 @@
 package com.yunx.app.ui.theme
 
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import com.google.android.material.color.utilities.Hct
@@ -86,6 +90,7 @@ private val darkScheme = darkColorScheme(
     surfaceContainerHighest = surfaceContainerHighestDark,
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ComposeEmptyActivityTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -138,9 +143,21 @@ fun ComposeEmptyActivityTheme(
 
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+        typography = Typography
+    ) {
+        // 「减少动画」/ 软件渲染（§3.7）：取消点击水波纹（含 Button / IconButton / 列表项），
+        // 这是用户感知最明显的「按钮动画」，且逐组件改既漏又吵，直接在主题层统一关掉
+        if (MotionPolicy.reducedMotion) {
+            CompositionLocalProvider(
+                LocalIndication provides NoIndication,
+                LocalRippleConfiguration provides null
+            ) {
+                content()
+            }
+        } else {
+            content()
+        }
+    }
 }
 
 /**

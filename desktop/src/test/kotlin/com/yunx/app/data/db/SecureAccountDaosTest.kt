@@ -3,6 +3,7 @@ package com.yunx.app.data.db
 import com.yunx.app.data.security.CredentialCipher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -28,8 +29,14 @@ class SecureAccountDaosTest {
         private val state = MutableStateFlow(initial)
         fun value(): QuarkAccountEntity? = state.value
         override fun observeAccount(): Flow<QuarkAccountEntity?> = state
+        override fun observeAccounts(): Flow<List<QuarkAccountEntity>> =
+            state.map { listOfNotNull(it) }
         override suspend fun upsert(account: QuarkAccountEntity) { state.value = account }
         override suspend fun getAccount(): QuarkAccountEntity? = state.value
+        override suspend fun getAccounts(): List<QuarkAccountEntity> = listOfNotNull(state.value)
+        override suspend fun setPrimary(id: String) = Unit
+        override suspend fun updateRemark(id: String, remark: String) = Unit
+        override suspend fun deleteById(id: String) = Unit
         override suspend fun clear() { state.value = null }
     }
 

@@ -45,7 +45,7 @@ object JcefHolder {
     private val lock = Any()
     private var initThread: Thread? = null
 
-    fun initBlocking(noSandbox: Boolean = false) {
+    fun initBlocking() {
         synchronized(lock) {
             if (browserReady) return
             var lastError: Throwable? = null
@@ -57,13 +57,16 @@ object JcefHolder {
                     }
                     killStaleJcefHelpers()
                     val builder = CefAppBuilder()
-                    builder.setInstallDir(File(AppContext.cacheDir, "jcef-bundle"))
-                    if (noSandbox) {
-                        // 受限/沙箱环境（如 CI）下 Chromium 进程沙箱拿不到目录授权，禁用之（仅诊断冒烟用）
-                        builder.addJcefArgs("--no-sandbox")
+                    val installDir = File(AppContext.cacheDir, "jcef-bundle")
+                    builder.setInstallDir(installDir)
+                    // 发布包带的是 app\jcef-natives.tar.xz（不含原生 jar）：
+                    // 自己解包到 installDir 后让 jcefmaven 跳过安装步骤。开发运行无此压缩包，
+                    // ensureInstalled 返回 false，仍由 jcefmaven 从 classpath 的原生 jar 安装。
+                    if (JcefNativesInstaller.ensureInstalled(installDir)) {
+                        builder.setSkipInstallation(true)
                     }
                     val settings = builder.getCefSettings()
-                    // 发布包只随带 locales/zh-CN.pak（见 portable-package.ps1 [2c/5]），
+                    // 发布包只随带 locales/zh-CN.pak（见 tools/JcefNativesPacker.kt），
                     // 这里显式指定 locale，避免按系统语言去找不存在的语言包
                     settings.locale = "zh-CN"
                     settings.windowless_rendering_enabled = false
@@ -93,11 +96,11 @@ object JcefHolder {
      * - 上一次尝试失败后再次调用会开启新一轮重试（登录页打开时调用，见 CookieLoginContent）。
      * 完成后 [browserReady] 置为 true，登录页自动切换为内嵌浏览器模式。
      */
-    fun initInBackground(noSandbox: Boolean = false) {
+    fun initInBackground() {
         synchronized(lock) {
             if (browserReady) return
             if (initThread?.isAlive == true) return
-            initThread = Thread({ initBlocking(noSandbox) }, "JCEF-Init").apply {
+            initThread = Thread({ initBlocking() }, "JCEF-Init").apply {
                 isDaemon = true
                 start()
             }

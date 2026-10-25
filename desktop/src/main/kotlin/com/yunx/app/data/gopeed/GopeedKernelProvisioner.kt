@@ -1,5 +1,6 @@
 package com.yunx.app.data.gopeed
 
+import com.yunx.app.data.network.GitHubMirror
 import com.yunx.app.data.network.HttpClients
 import com.yunx.app.data.update.UpdateChecker
 import com.yunx.app.util.Log
@@ -90,10 +91,10 @@ object GopeedKernelProvisioner {
 
     /**
      * 查询官方最新 Release，拼出本机可用的内核计划。
-     * @param mirrorPrefix 用户配置的镜像前缀；null/空用内置默认镜像
+     * @param mirrorPrefix 调用方指定的镜像前缀；null/空走 GitHubMirror 自动选最快（或用户固定）
      */
     suspend fun resolvePlan(mirrorPrefix: String?): Plan = withContext(Dispatchers.IO) {
-        val mirror = mirrorPrefix?.takeIf { it.isNotBlank() } ?: UpdateChecker.MIRROR_PREFIX
+        val mirror = mirrorPrefix?.takeIf { it.isNotBlank() } ?: GitHubMirror.activePrefix()
         val json = fetchLatestJson()
         val tag = json.optString("tag_name")
         if (tag.isBlank()) throw IllegalStateException("官方 Release 缺少版本号")

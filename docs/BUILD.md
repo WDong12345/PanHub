@@ -46,6 +46,71 @@ cd YunX-Desktop
 
 打包脚本会自动结束正在运行的程序实例，并在输出目录被占用时重试删除。
 
+便携包约 210MB（其中运行期 JRE 约 40MB、CEF 原生库压缩包约 88MB），体积主要来自 Chromium。
+
+## 发布包体积裁剪
+
+打包脚本只改**发布包里的文件**，不改变编译期依赖，也不改变任何功能：
+
+| 项目 | 处理 | 效果 |
+| --- | --- | --- |
+| `material-icons-extended` | 扫描所有 class 的常量池，只保留实际被引用的图标类 | 0.2 MB（完整包 36 MB） |
+| `sqlite-jdbc` | 只保留 `org/sqlite/native/Windows/x86_64` 原生库 | 2.37 → 0.75 MB |
+| `skiko-awt-runtime-windows-x64` | 从 `app\` 载荷里去掉 jar（原生库仍解到 `app\` 供加载） | −10.3 MB |
+| **CEF 原生库** | jar 内嵌 `tar.gz` 重压成 `tar.xz`（LZMA2 + BCJ），语言包只留 `zh-CN` | 131 → 88 MB |
+| `runtime\lib\jvm.lib` / `runtime\bin\splashscreen.dll` | 运行时用不到（链接期文件 / jpackage 默认启动器闪屏），jlink 后删除 | −1.2 MB |
+
+### CEF 原生库重压（tar.xz）
+
+发布包**不再**随带 `jcef-natives-*.jar`（解包后 261MB，gzip 后 120MB），而是：
+
+1. 打包时 `:desktop:exportJcefNatives` 单独导出原生 jar（`exportRuntimeLibs` 会排除它），
+   由 `JcefNativesPacker` 重压成 `app\jcef-natives.tar.xz`；
+2. 运行期首次需要内嵌浏览器时，`JcefNativesInstaller` 把它解到 `<缓存>\jcef-bundle`，
+   写 `install.lock` 与就绪标记（记录压缩包大小 / 时间，换包自动重解）；
+3. 随后 `CefAppBuilder.setSkipInstallation(true)`，jcefmaven 不再去找 classpath 里的原生 jar。
+
+开发运行（`run.ps1 run`）不吃这套：原生 jar 仍在 classpath 上，也没有这个压缩包，
+`ensureInstalled` 返回 false，行为与改动前一致。
+
+> 升级 jcef 版本只需改 `desktop/build.gradle.kts` 里的依赖坐标，打包脚本与压缩器无需改动。
+
+## 体积与本地裁剪包
+
+`desktop/libs/` 下有三个**随仓库分发**的 jar，都是为了压缩体积或规避仓库坐标问题，改动前先读各自的说明：
+
+| 文件 | 作用 | 重新生成 |
+| --- | --- | --- |
+| `material-color-utilities-1.0.0.jar` | 主题种子色（该库无公开 Maven 坐标，从 material 1.14.0 AAR 解包 `classes.jar`） | 升级 material 依赖时需重新解包 |
+| `sqlite-jdbc-3.47.1.0-win.jar` | 只保留 `org/sqlite/native/Windows` 的 SQLite JDBC（官方包 13.6 MB → 2.4 MB） | 升级 sqlite-jdbc 时：解压官方 jar，删掉 `org/sqlite/native/{Mac,Linux,Linux-Musl,FreeBSD,Linux-Android}` 后重新打包 |
+| `material-icons-extended-trimmed-1.7.3.jar` | 只保留项目实际引用的图标（官方包 36 MB → 219 KB） | 见下 |
+
+### 图标裁剪包
+
+项目**不再**依赖 `compose.materialIconsExtended`（完整包 5000+ 图标、36 MB）。裁剪包只保留源码里
+`Icons.Outlined/Filled/Rounded/AutoMirrored.*` 实际引用到的图标类（约 92 个）。
+
+新增图标时：**先在代码里直接写** `Icons.Outlined.Xxx`，如果编译报 `Unresolved reference`，说明裁剪包里没有，
+按下面步骤重新生成（PowerShell，JDK 17）：
+
+```powershell
+# 1) 从源码收集引用到的图标类名
+$rx = [regex]'Icons\.(AutoMirrored\.)?(Outlined|Filled|Rounded|TwoTone|Default)\.([A-Za-z0-9_]+)'
+$need = New-Object 'System.Collections.Generic.HashSet[string]'
+Get-ChildItem desktop\src\main\kotlin -Recurse -Filter *.kt | ForEach-Object {
+  foreach ($m in $rx.Matches((Get-Content $_.FullName -Raw))) {
+    $auto = if ($m.Groups[1].Value) { "automirrored/" } else { "" }
+    $style = $m.Groups[2].Value.ToLower(); if ($style -eq "default") { $style = "filled" }
+    $null = $need.Add("androidx/compose/material/icons/$auto$style/$($m.Groups[3].Value)Kt.class")
+  }
+}
+# 2) 从 Gradle 缓存里的官方 jar 中挑出这些 class（外加 META-INF/MANIFEST.MF 与 *.kotlin_module）
+#    写成 desktop\libs\material-icons-extended-trimmed-<版本>.jar，并同步 build.gradle.kts 的文件名
+```
+
+> 说明：`material-icons-core`（几百 KB）仍由 `compose.material3` 传递引入，核心图标（Add / Close / Search …）
+> 的 Filled 版本来自它，不在裁剪包范围内。
+
 ## 目录结构
 
 | 目录 | 说明 |

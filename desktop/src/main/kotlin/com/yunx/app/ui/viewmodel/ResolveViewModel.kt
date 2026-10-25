@@ -33,6 +33,7 @@ import com.yunx.app.data.network.Pan115Constants
 import com.yunx.app.data.network.Pan123Constants
 import com.yunx.app.data.network.QuarkConstants
 import com.yunx.app.data.network.QuarkCdn
+import com.yunx.app.data.network.GitHubMirror
 import com.yunx.app.data.network.ShareLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.data.network.StarSeaApi
@@ -110,16 +111,14 @@ class ResolveViewModel(
     private val linkHistoryDao: LinkHistoryDao,
     /** GitHub 解析器实例（null 表示未启用 GitHub 平台） */
     private val githubApi: GitHubApi? = null,
-    /** GitHub 下载镜像前缀提供者（由上层从设置注入用户配置；空串=使用内置默认镜像） */
-    private val mirrorPrefixProvider: () -> String = { UpdateChecker.MIRROR_PREFIX },
+    /** GitHub 下载镜像前缀提供者（由上层从设置注入；默认走 GitHubMirror 自动选最快或用户固定） */
+    private val mirrorPrefixProvider: () -> String = { GitHubMirror.activePrefix() },
     /**
      * 取链方式提供者（由上层从设置注入）：
      * true = 夸克免转存（直接换直链，不写入网盘，默认）；false = 先转存到临时目录再取链。
      * 用 lambda 而不是构造时取值，设置页改了立即生效。
      */
     private val noSaveDownloadProvider: () -> Boolean = { true },
-    /** 「下载时同时保存到网盘」的默认值提供者（设置页开关，解析页可临时覆盖） */
-    private val saveOnDownloadDefaultProvider: () -> Boolean = { false },
     /**
      * 多账号下载（实验性 C1）开关：由上层从 SettingsRepository 注入，改设置即时生效。
      * 开启后批量下载会按文件轮换该网盘的不同账号取链，绕开单账号的并发数 / 限速
@@ -131,7 +130,9 @@ class ResolveViewModel(
      * （工厂侧用 `multiSourceActive()` 判断，已保证 C2 生效时 C1 也开着）。
      * 开启后同一个文件用多个账号各取一条直链，分片轮流交给不同直链下载，见 [fetchAltLinks]。
      */
-    private val multiSourceDownloadProvider: () -> Boolean = { false }
+    private val multiSourceDownloadProvider: () -> Boolean = { false },
+    /** 「下载时同时保存到网盘」的默认值提供者（设置页开关，解析页可临时覆盖） */
+    private val saveOnDownloadDefaultProvider: () -> Boolean = { false }
 ) : ViewModel() {
 
     init {
@@ -172,6 +173,19 @@ class ResolveViewModel(
         private set
 
     /** 待转存文件（转存弹窗）；null 表示未在转存流程 */
+    /**
+     * 下载时是否同时保存到网盘。初值来自设置页，用户可在解析页临时改；
+     * 没动过时跟随设置实时变化。
+     */
+    private var saveOnDownloadOverride by mutableStateOf<Boolean?>(null)
+
+    val saveOnDownload: Boolean
+        get() = saveOnDownloadOverride ?: saveOnDownloadDefaultProvider()
+
+    fun setSaveOnDownload(value: Boolean) {
+        saveOnDownloadOverride = value
+    }
+
     var saveTarget by mutableStateOf<ShareFile?>(null)
         private set
 
@@ -182,20 +196,6 @@ class ResolveViewModel(
     /** 转存结果消息（Toast） */
     var saveMessage by mutableStateOf<String?>(null)
         private set
-
-    /**
-     * 下载时是否同时保存到网盘。初值来自设置页的默认开关，用户可在解析页临时改；
-     * 改动只影响本次会话的后续下载，不写回设置（避免一次临时勾选把默认值永久改掉）。
-     * 用户没动过时跟随设置实时变化（设置页改了立刻反映到勾选框）。
-     */
-    private var saveOnDownloadOverride by mutableStateOf<Boolean?>(null)
-
-    val saveOnDownload: Boolean
-        get() = saveOnDownloadOverride ?: saveOnDownloadDefaultProvider()
-
-    fun setSaveOnDownload(value: Boolean) {
-        saveOnDownloadOverride = value
-    }
 
     /** 当前分享是否支持转存（夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭） */
     val canSave: Boolean
@@ -383,18 +383,9 @@ class ResolveViewModel(
                             return@launch
                         }
                         resolveRepository.saveToCloud(s, file, toDirFid, credential)
-                            .onSuccess { savedFid ->
-                                // 用户的意图是下载：转存只是夸克强制的中间步骤，
-                                // 拿到新 fid 就地续下，别把人送到网盘页再点一次
-                                saveMessage = "已保存到夸克网盘，正在加入下载"
+                            .onSuccess {
+                                saveMessage = "已保存到夸克网盘"
                                 saveTarget = null
-                                val queued = enqueueSavedQuarkFile(savedFid, file, credential)
-                                saveMessage = if (queued > 0) {
-                                    "已保存到夸克网盘，已加入 $queued 个下载"
-                                } else {
-                                    "已保存到夸克网盘（未能获取下载链接，可到网盘页下载）"
-                                }
-                                if (queued > 0) downloadStarted = true
                             }
                             .onFailure {
                                 saveMessage = it.message ?: "转存失败"
@@ -653,17 +644,6 @@ class ResolveViewModel(
                         credentialPool[index % credentialPool.size]
                     }
                     runCatching {
-                        // 勾选「同时保存」：批量同样转存后用新 fid 续下（仅夸克显示该勾选、也只有它能续下）
-                        if (saveOnDownload && currentPlatform == SharePlatform.QUARK && credential.isNotBlank()) {
-                            val savedFid = currentRepo()
-                                .transferFile(s, file, currentDefaultDirFid(), quarkCred, batchChecked)
-                                .getOrThrow()
-                            val name = if (relPath.isBlank()) file.fname else relPath
-                            val link = currentRepo().getDownloadLink(savedFid, quarkCred).getOrThrow()
-                            enqueueDownload(link, quarkCred, link.filename.ifBlank { name })
-                            okCount++
-                            return@runCatching
-                        }
                         // 游客态（凭据为空）走游客取链：夸克/UC 分享直链不要求账号，带游客 __pugs 即可下载；
                         // 登录态优先免转存，夸克失败时自动回退到转存取链
                         val linkResult = if (credential.isBlank()) {
@@ -750,11 +730,8 @@ class ResolveViewModel(
 
     /**
      * 转存成功后原地续下：夸克要求先转存才能取链，但用户的意图是下载。
-     * 用转存返回的新 fid 直接取链入队，省掉「切到网盘页 → 找到目录 → 再点下载」；
-     * 文件夹则列一次转存后的目录再逐个入队。
-     *
-     * 注意：这里转存的是用户自己选的正式目录，绝不能挂 cleanupDirFid（清理只认 tr_* 临时目录）。
-     * @return 入队的文件数
+     * 用转存返回的新 fid 直接取链入队，免掉「切到网盘页 → 找到目录 → 再点下载」。
+     * 注意：转存的是用户自己选的正式目录，不能挂 cleanupDirFid（清理只认 tr_* 临时目录）。
      */
     private suspend fun enqueueSavedQuarkFile(
         savedFid: String,
@@ -804,12 +781,6 @@ class ResolveViewModel(
     }
 
     private var session: ShareSession? = null
-    /**
-     * 本次分享是否已被服务端拒绝免转存。夸克个别分享类型必须「先转存再取链」，
-     * 首次失败即闩住，后续不再逐文件重试 —— 否则批量下载一个文件夹要为一百个文件
-     * 各打一次必败的取链请求。与 [session] 同生命周期，解析新分享时复位。
-     */
-    private var noSaveRejectedForSession = false
     private var currentDirFid = QuarkConstants.DEFAULT_PDIR_FID
     private val dirStack = ArrayDeque<String>()
 
@@ -1016,8 +987,6 @@ class ResolveViewModel(
             repo.createSession(effectiveLink, pwd, credential)
                 .onSuccess { s ->
                     session = s
-                    // 新分享重新给免转存一次机会（上一份分享被拒不代表这份也被拒）
-                    noSaveRejectedForSession = false
                     currentDirFid = currentDefaultDirFid()
                     dirStack.clear()
                     pathNames = emptyList()
@@ -1216,14 +1185,13 @@ class ResolveViewModel(
                     currentLink = linkType.url
                     downloadManager.currentShareUrl = linkType.url
                     session = ShareSession(shareId = "github:direct", stoken = "", title = linkType.fileName)
-                    // 直链：无需再取链，直接入队（不进入文件列表、不再弹确认框）
-                    downloadManager.enqueue(
-                        url = UpdateChecker.mirrorUrl(linkType.url, mirrorPrefixProvider()),
-                        fileName = linkType.fileName,
-                        platform = DownloadPlatform.GITHUB,
-                        fallbackUrl = linkType.url
+                    // 直链：直接构造 DownloadLink 弹确认弹窗（不进入文件列表）
+                    downloadLink = DownloadLink(
+                        fid = "github:direct",
+                        filename = linkType.fileName,
+                        downloadUrl = linkType.url,
+                        size = -1
                     )
-                    downloadStarted = true
                     uiState = ResolveUiState.Idle
                 }
             }
@@ -1561,7 +1529,7 @@ class ResolveViewModel(
                 "https://raw.githubusercontent.com/${repo.owner}/${repo.name}/$branch/${encodePath(path)}"
             }
             fid.startsWith("github:asset:") -> fid.removePrefix("github:asset:")
-            // github:direct（直链）在 startGitHubResolve 已直接入队，不走此方法
+            // github:direct（直链）在 startGitHubResolve 已直接设置 downloadLink，不走此方法
             else -> null
         }
     }
@@ -1746,6 +1714,7 @@ class ResolveViewModel(
     /** 返回输入页 */
     fun backToInput() {
         session = null
+        downloadLink = null
         currentLink = null
         currentPwd = null
         pathNames = emptyList()
@@ -1833,9 +1802,7 @@ class ResolveViewModel(
      *
      * 两条退路：
      * - 用户在设置里关掉「免转存下载」（[noSaveDownloadProvider]）⇒ 直接走原来的转存流程；
-     * - 开着免转存但夸克个别分享类型服务端仍要求「先转存再取链」⇒ 失败后自动回退转存，
-     *   并闩住本次分享（[noSaveRejectedForSession]）不再逐文件重试。
-     * 回退必须是看得见的：不然网盘里凭空多出「YunX临时转存」，用户只会理解成「下载就得先转存」。
+     * - 开着免转存但夸克个别分享类型服务端仍要求「先转存再取链」⇒ 失败后自动回退转存。
      * 其余平台的默认实现就是原有取链，不存在第二条链路，不重复请求。
      */
     private suspend fun resolveShareLink(
@@ -1846,38 +1813,32 @@ class ResolveViewModel(
         skipSpaceCheck: Boolean = false
     ): Result<DownloadLink> {
         if (!noSaveDownloadProvider()) return repo.getShareDownloadLink(session, file, credential, skipSpaceCheck)
-        // 已被服务端拒过：直接转存取链（该标记只在夸克分支置位，解析新分享时复位）
-        if (noSaveRejectedForSession) return repo.getShareDownloadLink(session, file, credential, skipSpaceCheck)
         val noSave = repo.getShareDownloadLinkWithoutSave(session, file, credential)
         if (noSave.isSuccess || currentPlatform != SharePlatform.QUARK) return noSave
-        val reason = noSave.exceptionOrNull()?.message ?: "服务端未返回直链"
-        Log.w("ResolveVM", "夸克免转存取链失败，回退转存: $reason")
-        noSaveRejectedForSession = true
-        SnackbarController.show("免转存取链被拒：$reason；已改为转存后取链，下载完成会清理")
         return repo.getShareDownloadLink(session, file, credential, skipSpaceCheck)
     }
 
     /** 获取文件下载直链（各平台实现不同：夸克免转存优先（失败回退转存）/ UC 直接取 / 迅雷转存后取详情直链；GitHub 直接构造 URL） */
     fun fetchDownloadLink(file: ShareFile) {
-        // GitHub 分支：无需 API 取链，按 fid 直接构造下载 URL 并直接入队
+        // GitHub 分支：无需 API 取链，按 fid 直接构造下载 URL 弹确认弹窗
         if (currentPlatform == SharePlatform.GITHUB) {
             viewModelScope.launch {
+                downloadLink = null
                 downloadError = null
                 isFetchingDownloadLink = true
                 try {
+                    // 直链文件（DirectFile）在 startGitHubResolve 已设置 downloadLink；这里仅处理列表内文件
                     val url = githubUrlForFid(file.fid)
                     if (url == null) {
                         downloadError = "无法获取下载链接"
                         return@launch
                     }
-                    downloadManager.enqueue(
-                        url = UpdateChecker.mirrorUrl(url, mirrorPrefixProvider()),
-                        fileName = file.fname,
-                        size = file.fsize,
-                        platform = DownloadPlatform.GITHUB,
-                        fallbackUrl = url
+                    downloadLink = DownloadLink(
+                        fid = file.fid,
+                        filename = file.fname,
+                        downloadUrl = url,
+                        size = file.fsize
                     )
-                    downloadStarted = true
                 } finally {
                     isFetchingDownloadLink = false
                 }
@@ -1885,6 +1846,7 @@ class ResolveViewModel(
             return
         }
         viewModelScope.launch {
+            downloadLink = null
             downloadError = null
             // 新一轮取链：上一次预取的多源直链作废（直链签名有时效，不能跨次复用）
             pendingAltLinks = emptyList()
@@ -1904,10 +1866,7 @@ class ResolveViewModel(
                         return@launch
                     }
                     currentRepo().getGuestShareDownloadLink(s, file)
-                        .onSuccess { link ->
-                            enqueueDownload(link, link.guestCookie, link.filename.ifBlank { file.fname })
-                            downloadStarted = true
-                        }
+                        .onSuccess { downloadLink = it }
                         .onFailure { downloadError = it.message ?: "获取下载链接失败" }
                     return@launch
                 }
@@ -1918,8 +1877,7 @@ class ResolveViewModel(
                     else -> credential
                 }
                 // 勾选「同时保存」：转存后立刻用新 fid 续下。只对夸克开放 ——
-                // 其它平台转存返回值不保证可直接取链（如 115 不回传新 fid），勾了只能存不能下，
-                // 那一步交给行尾「转存」按钮，别在这里误导用户。
+                // 其它平台转存返回值不保证可直接取链，勾了只能存不能下，那一步交给行尾转存按钮。
                 if (saveOnDownload && currentPlatform == SharePlatform.QUARK) {
                     val savedFid = currentRepo().transferFile(s, file, currentDefaultDirFid(), quarkCred)
                         .getOrElse {
@@ -1934,6 +1892,7 @@ class ResolveViewModel(
                 // 优先免转存（不往用户网盘里转存）：夸克失败时自动回退到转存取链
                 resolveShareLink(currentRepo(), s, file, quarkCred)
                     .onSuccess { link ->
+                        // 单文件多源分片（实验性 C2）：同一时刻再用其他账号各取一条直链
                         val altLinks = fetchAltLinks(file, quarkCred)
                         enqueueDownload(
                             link, quarkCred, link.filename.ifBlank { file.fname },
@@ -2122,7 +2081,8 @@ class ResolveViewModel(
             headers = headers,
             size = link.size,
             platform = platform,
-            cleanupId = link.cleanupDirFid.orEmpty()
+            altSources = altSources,
+            saveDir = saveDir
         ) {
             // 下载完成（通过 onComplete 回调）：清理网盘临时转存目录；失败/取消不触发
             val dirFid = link.cleanupDirFid
@@ -2132,6 +2092,48 @@ class ResolveViewModel(
         }
     }
 
+    /** 将直链加入下载队列（单文件下载：入队后立即切换到下载页） */
+    fun startDownload(link: DownloadLink) {
+        viewModelScope.launch {
+            // 开始下载：先关闭弹窗（临时转存由下载完成 onComplete 清理，不在此时删）
+            val saveDir = pendingSaveDir
+            downloadLink = null
+            pendingSaveDir = ""
+            // GitHub 分支：无需网盘凭证，直链先经镜像前缀转换，带 size 和 platform=github 入队
+            if (currentPlatform == SharePlatform.GITHUB) {
+                try {
+                    val prefix = mirrorPrefixProvider()
+                    downloadManager.enqueue(
+                        url = UpdateChecker.mirrorUrl(link.downloadUrl, prefix),
+                        fileName = link.filename,
+                        size = link.size,
+                        platform = DownloadPlatform.GITHUB,
+                        // 镜像挂掉时回退原始直连（link.downloadUrl 为未镜像的 GitHub 直链）
+                        fallbackUrl = link.downloadUrl,
+                        saveDir = saveDir
+                    )
+                    downloadStarted = true
+                } catch (e: Exception) {
+                    Log.e("ResolveVM", "startDownload(github) failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                    downloadError = "下载启动失败：${e.message ?: e.javaClass.simpleName}"
+                }
+                return@launch
+            }
+            // 游客模式：夸克/UC 的小文件直链不要求登录（link 里已带游客 __pugs）
+            val credential = currentCredential().orEmpty()
+            if (credential.isBlank() && !supportsGuestDownload()) {
+                downloadError = "下载需要先登录${platformName()}（未登录仅能浏览文件列表）"
+                return@launch
+            }
+            try {
+                enqueueDownload(link, credential, saveDir = saveDir)
+                downloadStarted = true
+            } catch (e: Exception) {
+                Log.e("ResolveVM", "startDownload failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                downloadError = "下载启动失败：${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+    }
 
     private suspend fun loadFiles(
         s: ShareSession,
@@ -2175,13 +2177,13 @@ class ResolveViewModel(
         private val bookmarkDao: BookmarkDao,
         private val linkHistoryDao: LinkHistoryDao,
         private val githubApi: GitHubApi? = null,
-        private val mirrorPrefixProvider: () -> String = { UpdateChecker.MIRROR_PREFIX },
+        private val mirrorPrefixProvider: () -> String = { GitHubMirror.activePrefix() },
         private val noSaveDownloadProvider: () -> Boolean = { true },
-        private val saveOnDownloadDefaultProvider: () -> Boolean = { false },
         /** 设置仓库：默认直接读偏好，MainScreen 无需改动；多账号 / 多源开关改完即时生效 */
         private val settings: SettingsRepository = SettingsRepository(),
         private val multiAccountDownloadProvider: () -> Boolean = { settings.multiAccountDownload },
-        private val multiSourceDownloadProvider: () -> Boolean = { settings.multiSourceActive() }
+        private val multiSourceDownloadProvider: () -> Boolean = { settings.multiSourceActive() },
+        private val saveOnDownloadDefaultProvider: () -> Boolean = { settings.saveToCloudOnDownload }
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: KClass<T>, extras: CreationExtras): T {
@@ -2203,9 +2205,9 @@ class ResolveViewModel(
                 githubApi,
                 mirrorPrefixProvider,
                 noSaveDownloadProvider,
-                saveOnDownloadDefaultProvider,
                 multiAccountDownloadProvider,
-                multiSourceDownloadProvider
+                multiSourceDownloadProvider,
+                saveOnDownloadDefaultProvider
             ) as T
         }
     }

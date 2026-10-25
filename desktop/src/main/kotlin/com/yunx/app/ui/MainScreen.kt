@@ -74,6 +74,7 @@ import com.yunx.app.data.gopeed.GopeedEngine
 import com.yunx.app.data.network.BaiduApi
 import com.yunx.app.data.network.C139Api
 import com.yunx.app.data.network.GitHubApi
+import com.yunx.app.data.network.GitHubMirror
 import com.yunx.app.data.network.GitHubTokenStore
 import com.yunx.app.data.network.GuangYaApi
 import com.yunx.app.data.network.HttpClients
@@ -82,15 +83,18 @@ import com.yunx.app.data.network.LanzouApi
 import com.yunx.app.data.network.Pan115Api
 import com.yunx.app.data.network.Pan123Api
 import com.yunx.app.data.network.QuarkApi
-import com.yunx.app.data.network.QuarkConstants
 import com.yunx.app.data.network.TokenCheck
 import com.yunx.app.data.network.UCApi
 import com.yunx.app.data.network.XunleiApi
+import com.yunx.app.data.network.video.VideoPlatform
+import com.yunx.app.data.download.VideoDownloads
 import com.yunx.app.data.update.UpdateChecker
 import com.yunx.app.data.db.DownloadTaskEntity
 import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.ui.components.CloseChoice
 import com.yunx.app.ui.components.CloseConfirmDialog
+import com.yunx.app.ui.SnackbarController
+import com.yunx.app.util.CookieCleaner
 import com.yunx.app.util.DesktopActions
 import com.yunx.app.util.TrayManager
 import com.yunx.app.data.repository.AccountDirectory
@@ -128,10 +132,13 @@ import com.yunx.app.ui.login.Pan115LoginScreen
 import com.yunx.app.ui.login.Pan123LoginScreen
 import com.yunx.app.ui.login.QuarkLoginScreen
 import com.yunx.app.ui.login.UCLoginScreen
+import com.yunx.app.ui.login.VideoLoginScreen
 import com.yunx.app.ui.login.XunleiLoginScreen
 import com.yunx.app.ui.login.XunleiWebLoginScreen
+import com.yunx.app.ui.screens.VideoAccountSheet
 import com.yunx.app.ui.login.XunleiVerifyWebViewScreen
 import com.yunx.app.ui.navigation.MainTab
+import com.yunx.app.ui.theme.Motion
 import com.yunx.app.ui.screens.AboutScreen
 import com.yunx.app.ui.screens.AnnouncementPopupDialog
 import com.yunx.app.ui.screens.AnnouncementScreen
@@ -144,6 +151,7 @@ import com.yunx.app.ui.screens.ExperimentalFeaturesScreen
 import com.yunx.app.ui.screens.StorageDirectoryScreen
 import com.yunx.app.ui.screens.OnboardingScreen
 import com.yunx.app.ui.screens.ResolveScreen
+import com.yunx.app.ui.screens.VideoResolveScreen
 import com.yunx.app.ui.screens.SettingsScreen
 import com.yunx.app.ui.screens.SupportScreen
 import com.yunx.app.ui.screens.ThemeScreen
@@ -167,6 +175,9 @@ import com.yunx.app.ui.viewmodel.Pan115AccountViewModel
 import com.yunx.app.ui.viewmodel.Pan115CloudViewModel
 import com.yunx.app.ui.viewmodel.Pan123AccountViewModel
 import com.yunx.app.ui.viewmodel.Pan123CloudViewModel
+import com.yunx.app.ui.viewmodel.VideoAccountViewModel
+import com.yunx.app.ui.viewmodel.VideoResolveUiState
+import com.yunx.app.ui.viewmodel.VideoResolveViewModel
 import com.yunx.app.ui.viewmodel.QuarkAccountViewModel
 import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
 import com.yunx.app.ui.viewmodel.ResolveViewModel
@@ -174,9 +185,11 @@ import com.yunx.app.ui.viewmodel.UCAccountViewModel
 import com.yunx.app.ui.viewmodel.UCCoudViewModel
 import com.yunx.app.ui.viewmodel.XunleiAccountViewModel
 import com.yunx.app.ui.viewmodel.XunleiCloudViewModel
-import kotlinx.coroutines.flow.first
+import com.yunx.app.util.Log
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+
+private const val TAG = "YunX-Main"
 
 /**
  * 桌面版主页框架：
@@ -198,12 +211,6 @@ fun MainScreen(
     onMinimizeToTray: () -> Unit = {}
 ) {
     var currentTab by rememberSaveable { mutableStateOf(MainTab.Resolve) }
-    /**
-     * 「回到网盘总览」信号：点侧栏「网盘」Tab（已在网盘页时）或离开网盘 Tab 时自增，
-     * DriveScreen 消费后把所有网盘浏览态复位。没有它的话，浏览页的开关是 rememberSaveable，
-     * 侧栏点回网盘仍停在刚才那个网盘里，用户找不到回总览的入口。
-     */
-    var driveHomeSignal by remember { mutableStateOf(0) }
     // 网盘页：四宫格 / 列表布局切换
     var driveGridMode by rememberSaveable { mutableStateOf(false) }
     var showQuarkLogin by rememberSaveable { mutableStateOf(false) }
@@ -276,8 +283,6 @@ fun MainScreen(
     val repository = remember {
         QuarkAccountRepository(db.quarkAccountDao(), api)
     }
-    // 夸克分享仓库：解析页取链用，启动清理遗留临时转存也用它（同一个实例）
-    val quarkResolveRepository = remember { QuarkResolveRepository(api) }
     val ucRepository = remember {
         UCAccountRepository(db.ucAccountDao(), ucApi)
     }
@@ -319,7 +324,8 @@ fun MainScreen(
             db.pan115AccountDao(),
             db.guangyaAccountDao(),
             db.ilanzouAccountDao(),
-            db.lanzouAccountDao()
+            db.lanzouAccountDao(),
+            db.videoAccountDao()
         )
     }
     val downloadManager = remember {
@@ -417,23 +423,44 @@ fun MainScreen(
         factory = MultiAccountViewModel.Factory(accountDirectory)
     )
 
+    // 视频解析账号：各平台 Cookie 的登录态与多账号管理
+    val videoAccountViewModel: VideoAccountViewModel = viewModel(factory = VideoAccountViewModel.Factory())
+    val videoLoginState by videoAccountViewModel.loginState.collectAsState()
+    val videoAccounts by videoAccountViewModel.accounts.collectAsState()
+    var videoLoginPlatform by remember { mutableStateOf<VideoPlatform?>(null) }
+    var videoLoginNewAccount by remember { mutableStateOf(false) }
+    var videoManagePlatform by remember { mutableStateOf<VideoPlatform?>(null) }
+
+    // 视频解析页（全屏覆盖）：非空表示当前正在看某个视频链接的解析结果
+    val videoResolveViewModel: VideoResolveViewModel = viewModel(factory = VideoResolveViewModel.Factory())
+    var videoResolveText by remember { mutableStateOf<String?>(null) }
+
     /**
      * 账号弹窗点「添加账号」：先清该平台的内嵌浏览器登录态（否则网页登录会自动登回旧账号），
      * 再标记「这次登录落成新账号」，最后打开对应平台的登录页。
+     *
+     * ★ 清理是挂起等待的（不阻塞 EDT）：CEF 的 Cookie 回调靠 EDT 上的 timer 泵动，
+     *   之前同步等 3 秒会把泵堵死 → 「添加第二个账号时登录页打不开」。
      */
     val onAddAccount: (String) -> Unit = { platform ->
-        multiAccountViewModel.prepareAddAccount(platform)
-        when (platform) {
-            DownloadPlatform.QUARK -> { viewModel.beginAddAccount(); showQuarkLogin = true }
-            DownloadPlatform.UC -> { ucViewModel.beginAddAccount(); showUCLogin = true }
-            DownloadPlatform.XUNLEI -> { xunleiViewModel.beginAddAccount(); showXunleiLogin = true }
-            DownloadPlatform.BAIDU -> { baiduViewModel.beginAddAccount(); showBaiduLogin = true }
-            DownloadPlatform.C139 -> { c139ViewModel.beginAddAccount(); showC139Login = true }
-            DownloadPlatform.PAN123 -> { pan123ViewModel.beginAddAccount(); showPan123Login = true }
-            DownloadPlatform.PAN115 -> { pan115ViewModel.beginAddAccount(); showPan115Login = true }
-            DownloadPlatform.GUANGYA -> { guangyaViewModel.beginAddAccount(); showGuangYaLogin = true }
-            DownloadPlatform.ILANZOU -> { ilanzouViewModel.beginAddAccount(); showILanzouLogin = true }
-            DownloadPlatform.LANZOU -> { lanzouViewModel.beginAddAccount(); showLanzouLogin = true }
+        scope.launch {
+            // ★ 清登录态失败也必须继续打开登录页：不然用户看到的就是「点了添加账号没有任何反应」
+            val startedAt = System.currentTimeMillis()
+            runCatching { multiAccountViewModel.prepareAddAccount(platform) }
+                .onFailure { Log.w(TAG, "prepareAddAccount($platform) 失败：${it.message}") }
+            Log.d(TAG, "onAddAccount: platform=$platform 清登录态耗时=${System.currentTimeMillis() - startedAt}ms")
+            when (platform) {
+                DownloadPlatform.QUARK -> { viewModel.beginAddAccount(); showQuarkLogin = true }
+                DownloadPlatform.UC -> { ucViewModel.beginAddAccount(); showUCLogin = true }
+                DownloadPlatform.XUNLEI -> { xunleiViewModel.beginAddAccount(); showXunleiLogin = true }
+                DownloadPlatform.BAIDU -> { baiduViewModel.beginAddAccount(); showBaiduLogin = true }
+                DownloadPlatform.C139 -> { c139ViewModel.beginAddAccount(); showC139Login = true }
+                DownloadPlatform.PAN123 -> { pan123ViewModel.beginAddAccount(); showPan123Login = true }
+                DownloadPlatform.PAN115 -> { pan115ViewModel.beginAddAccount(); showPan115Login = true }
+                DownloadPlatform.GUANGYA -> { guangyaViewModel.beginAddAccount(); showGuangYaLogin = true }
+                DownloadPlatform.ILANZOU -> { ilanzouViewModel.beginAddAccount(); showILanzouLogin = true }
+                DownloadPlatform.LANZOU -> { lanzouViewModel.beginAddAccount(); showLanzouLogin = true }
+            }
         }
     }
     val quarkCloudViewModel: QuarkCloudViewModel = viewModel(
@@ -457,6 +484,10 @@ fun MainScreen(
         else xunleiApi.refreshToken(acc.refreshToken, deviceId, acc.authType)?.also { (at, nrt) ->
             xunleiRepository.updateTokens(at, nrt)
         }
+    }
+    // 迅雷网页账号的 captcha 刷新：本地 9 盐签名 → 被拒才回退网页会话
+    xunleiApi.webCaptchaRefresher = { deviceId, action ->
+        xunleiRepository.refreshWebCaptcha(deviceId, action)
     }
     val xunleiCloudViewModel: XunleiCloudViewModel = viewModel(
         factory = XunleiCloudViewModel.Factory(
@@ -583,7 +614,7 @@ fun MainScreen(
     val resolveViewModel: ResolveViewModel = viewModel(
         factory = ResolveViewModel.Factory(
             repository,
-            quarkResolveRepository,
+            QuarkResolveRepository(api),
             ucRepository,
             UCResolveRepository(ucApi),
             xunleiRepository,
@@ -606,12 +637,10 @@ fun MainScreen(
             db.bookmarkDao(),
             db.linkHistoryDao(),
             githubApi,
-            // GitHub 镜像前缀：用户自定义优先，未配置时用内置默认镜像
-            { settings.githubMirrorPrefix?.ifBlank { null } ?: UpdateChecker.MIRROR_PREFIX },
+            // GitHub 镜像前缀：自动（实测选最快）或用户手动固定，统一由 GitHubMirror 解析
+            { GitHubMirror.activePrefix() },
             // 取链方式开关：设置页「免转存下载」实时生效
-            { settings.quarkNoSaveDownload },
-            // 下载时同时保存到网盘：设置页默认值，解析页可临时覆盖
-            { settings.saveToCloudOnDownload }
+            { settings.quarkNoSaveDownload }
         )
     )
     val downloadViewModel: DownloadViewModel = viewModel(
@@ -633,8 +662,8 @@ fun MainScreen(
     val ilanzouAccount by ilanzouViewModel.ilanzouAccount.collectAsState()
     val lanzouAccount by lanzouViewModel.lanzouAccount.collectAsState()
 
-    // 下载入队后不自动切页：连续下载多个文件时切来切去反而打断操作，
-    // 任务已在下载页排队，用户想看进度时自己点侧栏「下载」即可
+    // 解析页发起下载后，自动切换到「下载」Tab
+    // 入队后不自动切页：连续下载多个文件时切来切去反而打断操作
     LaunchedEffect(resolveViewModel.downloadStarted) {
         if (resolveViewModel.downloadStarted) {
             resolveViewModel.consumeDownloadStarted()
@@ -674,6 +703,29 @@ fun MainScreen(
         return
     }
 
+    // 迅雷登录页（App 通道：账号密码 / 短信 / 网页登录入口）
+    // ★ 与夸克 / UC 一致改成「早期返回」渲染：覆盖层（PageOverlay）在某些状态下不出现时
+    //   用户看到的就是「点了添加账号没有任何页面」；早期返回没有这层依赖。
+    if (showXunleiLogin) {
+        XunleiLoginScreen(
+            viewModel = xunleiViewModel,
+            onBack = { xunleiViewModel.cancelAddAccount(); showXunleiLogin = false },
+            onSaved = { showXunleiLogin = false },
+            onVerify = { url, deviceId ->
+                xunleiVerifyUrl = url
+                xunleiVerifyDeviceId = deviceId
+                showXunleiLogin = false
+                showXunleiVerify = true
+            },
+            onWebLogin = {
+                // 网页登录：另一套接口，不受 App 通道风控影响，收不到短信时的兜底
+                showXunleiLogin = false
+                showXunleiWebLogin = true
+            }
+        )
+        return
+    }
+
     // 百度登录页：全屏覆盖（粘贴 Cookie 登录）
     if (showBaiduLogin) {
         BaiduLoginScreen(
@@ -704,6 +756,88 @@ fun MainScreen(
         return
     }
 
+    // 视频平台登录页：全屏覆盖（JCEF 网页登录；无网页登录页时自动落到粘贴 Cookie）
+    val pendingVideoLogin = videoLoginPlatform
+    if (pendingVideoLogin != null) {
+        CompositionLocalProvider(
+            LocalContentColor provides MaterialTheme.colorScheme.onBackground
+        ) {
+            VideoLoginScreen(
+                platform = pendingVideoLogin,
+                newAccount = videoLoginNewAccount,
+                viewModel = videoAccountViewModel,
+                onBack = { videoLoginPlatform = null },
+                onSaved = { videoLoginPlatform = null }
+            )
+        }
+        return
+    }
+
+    /**
+     * 视频解析结果页：渲染在**内容区**（左侧导航栏保留），与网盘解析同一套窗口内层级。
+     *
+     * ★ 原先这里是「整窗早返回」，会带来两个问题：
+     *   1. 侧栏被整页盖住，看起来像另开了一个窗口；
+     *   2. 早返回跳过了根部 Box 里的全局弹窗层（退出确认 / 提示弹窗），关窗时确认框被挡住。
+     *   页面自带页头（返回 + 平台 + 标题），显示时让出全局大标题。
+     * ★ 返回时不清空解析结果（[videoResolveViewModel.reset] 由下一次解析覆盖），避免退出瞬间闪空。
+     */
+    val videoResolvePage: @Composable () -> Unit = {
+        // 独立于根部的 LocalContentColor 提供点：M3 默认内容色是黑色，深色模式下
+        // 未显式指定颜色的文字（错误提示等）会看不见，这里补上主题内容色
+        CompositionLocalProvider(
+            LocalContentColor provides MaterialTheme.colorScheme.onBackground
+        ) {
+            VideoResolveScreen(
+                viewModel = videoResolveViewModel,
+                onBack = { videoResolveText = null },
+                onDownload = { medias ->
+                    val result = (videoResolveViewModel.uiState as? VideoResolveUiState.Success)?.result
+                    if (result != null && medias.isNotEmpty()) {
+                        scope.launch {
+                            medias.forEachIndexed { index, media ->
+                                downloadManager.enqueue(
+                                    url = media.url,
+                                    fileName = VideoDownloads.fileNameFor(result, media, index, medias.size),
+                                    headers = media.headers,
+                                    size = media.size,
+                                    platform = DownloadPlatform.VIDEO,
+                                    // DASH 音轨 / 动图资源随任务落库，由 DownloadManager 决定是否合轨或合成
+                                    mergeAudioUrl = media.audioUrl,
+                                    mergeAudioHeaders = media.audioHeaders,
+                                    motionUrl = media.motionUrl
+                                )
+                            }
+                            SnackbarController.show("已加入下载队列（${medias.size} 项）")
+                            currentTab = MainTab.Download
+                            videoResolveViewModel.reset()
+                            videoResolveText = null
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    // 视频平台账号管理弹窗（多账号：设主账号 / 改备注 / 退出）
+    videoManagePlatform?.let { platform ->
+        VideoAccountSheet(
+            platform = platform,
+            accounts = videoAccounts.filter { it.platform == platform.name },
+            onSetPrimary = { id -> videoAccountViewModel.setPrimary(platform, id) },
+            onRename = { id, remark -> videoAccountViewModel.updateRemark(id, remark) },
+            onRemove = { id -> videoAccountViewModel.remove(id) },
+            onAddAccount = {
+                videoManagePlatform = null
+                videoLoginNewAccount = true
+                CookieCleaner.clearCookiesForDomains(listOf(platform.cookieDomain))
+                videoLoginPlatform = platform
+            },
+            onLogoutAll = { videoAccountViewModel.removeAll(platform) },
+            onDismiss = { videoManagePlatform = null }
+        )
+    }
+
     // 折叠标题状态提升到本层：跨页面共享
     val topAppBarState = rememberTopAppBarState()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(topAppBarState)
@@ -729,23 +863,8 @@ fun MainScreen(
     // 启动时同步一次「Gopeed 内核是否已导入」（进程内状态与磁盘事实对齐，供引擎页与分流判断使用）
     LaunchedEffect(Unit) { GopeedEngine.syncInstalledState() }
 
-    /**
-     * 启动时清理夸克遗留的临时转存目录（tr_*）。
-     * 正常路径下这些目录由「下载完成」回调删除，但回调是内存闭包，进程被杀 / 重启后续跑的
-     * 任务没有回调，目录就一直留在用户网盘里 —— 看起来就像「下载必须得先转存」。
-     * 仍在下载 / 暂停 / 失败待重下的任务引用着的目录（cleanupId）不能碰，删了正在下的直链会 404。
-     */
-    LaunchedEffect(Unit) {
-        val cookie = repository.getAccount()?.cookie.orEmpty()
-        if (!QuarkConstants.isValidCookie(cookie)) return@LaunchedEffect
-        val keepFids = runCatching { downloadManager.tasks.first() }
-            .getOrDefault(emptyList())
-            .filter { it.status != DownloadTaskEntity.STATUS_COMPLETED && it.cleanupId.isNotBlank() }
-            .map { it.cleanupId }
-            .toSet()
-        val swept = runCatching { quarkResolveRepository.sweepLeftoverTempDirs(cookie, keepFids) }.getOrDefault(0)
-        if (swept > 0) SnackbarController.show("已清理夸克网盘遗留的临时转存目录 $swept 个")
-    }
+    // 启动时按需刷新 GitHub 镜像测速（结果过期或从未测过才跑，避免每次启动都测速）
+    LaunchedEffect(Unit) { GitHubMirror.ensureFresh() }
 
     /**
      * 启动自动检查更新（整个会话只跑一次）。
@@ -857,16 +976,8 @@ fun MainScreen(
         val tabContent: @Composable () -> Unit = {
             AnimatedContent(
                 targetState = currentTab,
-                transitionSpec = {
-                    val forward = targetState.ordinal > initialState.ordinal
-                    if (forward) {
-                        (fadeIn(tween(220)) + slideInHorizontally(tween(220)) { it / 4 })
-                            .togetherWith(fadeOut(tween(160)) + slideOutHorizontally(tween(160)) { -it / 4 })
-                    } else {
-                        (fadeIn(tween(220)) + slideInHorizontally(tween(220)) { -it / 4 })
-                            .togetherWith(fadeOut(tween(160)) + slideOutHorizontally(tween(160)) { it / 4 })
-                    }
-                },
+                // 位移+淡入；「减少动画」/ 软件渲染时只做极短淡入（§3.7）
+                transitionSpec = { Motion.tabSwitch(targetState.ordinal > initialState.ordinal) },
                 label = "mainTab"
             ) { tab ->
                 saveableStateHolder.SaveableStateProvider(tab) {
@@ -885,7 +996,11 @@ fun MainScreen(
                             // 主页快捷方式（实验性功能，默认关闭）：复用收藏仓库数据源
                             homeShortcutsEnabled = homeShortcutsEnabled,
                             homeShortcuts = bookmarks,
-                            onManageShortcuts = { showBookmarks = true }
+                            onManageShortcuts = { showBookmarks = true },
+                            onVideoLink = { text ->
+                                videoResolveViewModel.resolve(text)
+                                videoResolveText = text
+                            }
                         )
                         MainTab.Drive -> DriveScreen(
                             scrollBehavior = scrollBehavior,
@@ -912,12 +1027,19 @@ fun MainScreen(
                             lanzouCloudViewModel = lanzouCloudViewModel,
                             driveQuotaViewModel = driveQuotaViewModel,
                             multiAccount = multiAccountViewModel,
+                            videoLoginState = videoLoginState,
+                            videoAccounts = videoAccounts,
+                            onVideoLogin = { platform ->
+                                videoLoginNewAccount = false
+                                // 与网盘一致：先清该平台的 JCEF 登录态，避免登录页自动登回旧账号
+                                CookieCleaner.clearCookiesForDomains(listOf(platform.cookieDomain))
+                                videoLoginPlatform = platform
+                            },
+                            onVideoManage = { videoManagePlatform = it },
                             onAddAccount = onAddAccount,
                             onQuarkLogin = { showQuarkLogin = true },
                             onQuarkLogout = { viewModel.logout() },
-                            // 网盘页下载同样不自动切页：批量挑文件时留在原目录，进度自己去下载页看
                             onDownloadStarted = {},
-                            homeSignal = driveHomeSignal,
                             onUCLogin = { showUCLogin = true },
                             onUCLogout = { ucViewModel.logout() },
                             onXunleiLogin = { showXunleiLogin = true },
@@ -987,15 +1109,10 @@ fun MainScreen(
             Row(modifier = Modifier.fillMaxSize()) {
                 MainNavigationRail(
                     currentTab = currentTab,
+                    // 切 Tab 视为离开视频解析页（侧栏现在可点，不能让它一直压在新 Tab 上面）
                     onTabSelected = {
-                        // 已经在「网盘」Tab 时再点一次 = 从某个网盘的浏览页退回全部网盘
-                        if (it == MainTab.Drive && currentTab == MainTab.Drive) {
-                            driveHomeSignal++
-                        } else if (it != MainTab.Drive) {
-                            // 离开网盘 Tab 时复位，下次进来看到的是总览而不是上次的浏览页
-                            driveHomeSignal++
-                        }
                         currentTab = it
+                        videoResolveText = null
                     }
                 )
                 Column(
@@ -1003,13 +1120,18 @@ fun MainScreen(
                         .weight(1f)
                         .fillMaxSize()
                 ) {
-                    topBarContent()
+                    // 视频解析页自带页头（返回 + 平台 + 标题），打开时让出全局大标题
+                    if (videoResolveText == null) topBarContent()
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
                     ) {
                         tabContent()
+                        // 视频解析结果压在本 Tab 内容之上（侧栏与全局弹窗层都留在外层）
+                        if (videoResolveText != null) {
+                            videoResolvePage()
+                        }
                     }
                 }
             }
@@ -1137,25 +1259,6 @@ fun MainScreen(
         // ★ 为什么只有这 7 个页面在这里：内嵌 Chromium 的登录页（夸克 / UC / 百度 / 139 / 115 / 迅雷网页登录）
         //   用的是 SwingPanel（真实 AWT 子控件），Compose 侧无法对它做透明度与位移动画，
         //   强行套过渡会出现「页面淡入但浏览器区域瞬间出现」的破绽，所以那几个页面保持原样（仍是早期返回）。
-        PageOverlay(visible = showXunleiLogin) {
-            XunleiLoginScreen(
-                viewModel = xunleiViewModel,
-                onBack = { xunleiViewModel.cancelAddAccount(); showXunleiLogin = false },
-                onSaved = { showXunleiLogin = false },
-                onVerify = { url, deviceId ->
-                    xunleiVerifyUrl = url
-                    xunleiVerifyDeviceId = deviceId
-                    showXunleiLogin = false
-                    showXunleiVerify = true
-                },
-                onWebLogin = {
-                    // 网页登录：另一套接口，不受 App 通道风控影响，收不到短信时的兜底
-                    showXunleiLogin = false
-                    showXunleiWebLogin = true
-                }
-            )
-        }
-
         // 迅雷验证页（桌面版：系统浏览器承载验证）；放在登录页之后 → 交叉切换时它绘制在上层
         PageOverlay(visible = showXunleiVerify) {
             XunleiVerifyWebViewScreen(
@@ -1230,6 +1333,10 @@ fun MainScreen(
         // 全局弹窗覆盖层（FadeAlertDialog）：窗口内直接绘制，零原生窗口开销。
         // 放在根部最后 → 绘制在所有内容（含全屏覆盖层）之上。
         OverlayDialogHost()
+
+        // 引擎安装提示（视频预览 / DASH 合轨缺 FFmpeg 时询问是否下载）：
+        // 合轨在后台线程触发，必须挂在根部常驻组合里才弹得出来。
+        EngineInstallPromptHost()
 
         // 关闭确认弹窗（退出 / 最小化到托盘 / 取消）
         CloseConfirmDialog(
@@ -1401,10 +1508,10 @@ fun MainScreen(
                             currentTab = MainTab.Download
                         }
                     },
-                    // 镜像站下载：用设置里的自定义镜像前缀（未配置则用默认），GitHub 直连作为失败回退
+                    // 镜像站下载：用当前生效的镜像前缀（自动选最快 / 用户固定），GitHub 直连作为失败回退
                     onDownloadMirrorAsset = { url, name ->
                         startupUpdateRelease = null
-                        val prefix = settings.githubMirrorPrefix?.ifBlank { null } ?: UpdateChecker.MIRROR_PREFIX
+                        val prefix = GitHubMirror.activePrefix()
                         scope.launch {
                             downloadManager.enqueue(
                                 url = UpdateChecker.mirrorUrl(url, prefix),

@@ -51,9 +51,11 @@ class MultiAccountViewModel(
      *
      * ★ 不清的话，网页登录型平台（夸克 / UC / 百度 / 139 / 123 / 115 / 迅雷网页登录）的登录页
      *   会把内嵌浏览器里已有的登录态自动检测出来并保存 —— 于是「添加账号」加进来的还是同一个账号。
+     * ★ 必须**等待**清理完成再开登录页（且不能阻塞 EDT，CEF 回调要靠 EDT 上的 timer 泵动）：
+     *   旧实现在点击时同步等 3 秒，正好卡死回调泵，表现为「加第二个账号时登录页打不开」。
      */
-    fun prepareAddAccount(platform: String) {
-        CookieCleaner.clearCookiesForDomains(webDomains(platform))
+    suspend fun prepareAddAccount(platform: String) {
+        CookieCleaner.clearCookiesAndWait(webDomains(platform))
     }
 
     /**

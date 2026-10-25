@@ -48,8 +48,6 @@ fun XunleiLoginScreen(
     val step = viewModel.loginStep
     val error = viewModel.loginError
     val smsSent = viewModel.smsSent
-    // collectAsState 订阅账号：登录成功后 account 变非空，必触发重组 → 自动关闭登录页
-    val account by viewModel.xunleiAccount.collectAsState()
 
     var username by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
@@ -83,9 +81,13 @@ fun XunleiLoginScreen(
             viewModel.consumeLoginError()
         }
     }
-    // 登录成功后自动关闭登录页（短信/密码任一方式成功，账号非空即关闭）
-    LaunchedEffect(account) {
-        if (account != null) onSaved()
+    // 登录成功后自动关闭登录页（短信/密码任一方式成功）
+    // ★ 不能用「账号非空」判断：「添加账号」时旧账号本来就在，页面刚渲染就会被判成登录成功
+    //   → 用户看到「打开闪一下就关闭」。改成监听落库成功计数（进入页面时记下基线）。
+    val succeeded = viewModel.loginSucceeded
+    val succeededBaseline = remember { succeeded }
+    LaunchedEffect(succeeded) {
+        if (succeeded > succeededBaseline) onSaved()
     }
 
     BackHandler { onBack() }

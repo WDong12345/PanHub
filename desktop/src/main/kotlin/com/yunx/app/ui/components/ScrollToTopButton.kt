@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.yunx.app.ui.theme.Motion
 import kotlinx.coroutines.launch
 
 /**
@@ -43,10 +44,13 @@ internal fun ScrollToTopButton(
             listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
         }
     }
+    // 「减少动画」/ 软件渲染时（§3.7）：缩放与淡入时长为 0，等价直接出现
+    val enterSpec = tween<Float>(Motion.duration(200))
+    val exitSpec = tween<Float>(Motion.duration(150))
     AnimatedVisibility(
         visible = showButton,
-        enter = fadeIn(tween(200)) + scaleIn(tween(200), initialScale = 0.8f),
-        exit = fadeOut(tween(150)) + scaleOut(tween(150), targetScale = 0.8f),
+        enter = fadeIn(enterSpec) + scaleIn(enterSpec, initialScale = 0.8f),
+        exit = fadeOut(exitSpec) + scaleOut(exitSpec, targetScale = 0.8f),
         modifier = modifier
     ) {
         SmallFloatingActionButton(

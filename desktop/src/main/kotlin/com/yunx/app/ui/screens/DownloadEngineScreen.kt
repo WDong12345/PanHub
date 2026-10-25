@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.UploadFile
@@ -40,6 +41,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Surface
@@ -63,7 +65,9 @@ import androidx.compose.ui.unit.dp
 import com.yunx.app.data.download.DownloadSaver
 import com.yunx.app.data.gopeed.GopeedEngine
 import com.yunx.app.data.gopeed.GopeedKernelProvisioner
+import com.yunx.app.data.network.GitHubMirror
 import com.yunx.app.data.prefs.SettingsRepository
+import com.yunx.app.data.preview.FfplayManager
 import com.yunx.app.ui.BackHandler
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.ui.components.FadeAlertDialog
@@ -76,15 +80,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 下载引擎页：在内置分片下载器与外部 Gopeed 引擎之间选择，并管理 Gopeed 内核。
+ * 引擎管理页：管理「下载引擎」（内置分片下载器 / 外部 Gopeed 引擎）与
+ * 「视频预览引擎」（自动 / 内置 JavaFX / FFplay 在线预览）。
  *
- * 与上游 Android 版的能力对齐（去掉 Android 专属的存储权限、AAR 导入、前台服务）：
+ * 下载引擎部分与上游 Android 版的能力对齐（去掉 Android 专属的存储权限、AAR 导入、前台服务）：
  * - 引擎状态 / 内核版本 / 内核体积 / 下载目录展示；
  * - 内核获取：**从 Gopeed 官方 Release 下载**（镜像站回退 + sha256 校验）与**导入本地 exe/zip**；
  * - 重启引擎、删除内核；
  * - 切换引擎（切换前要求内核已导入）。
  *
  * 只影响**新任务**由谁执行；已有任务保持原归属（已在下载中的引擎任务继续由引擎跑完）。
+ *
+ * 视频预览引擎（实验性）：ffplay 由 FFmpeg 精简版提供，**不随包发布** → 这里提供在线下载/
+ * 更新；本机 PATH 或常见目录已装 FFmpeg 时会自动命中，无需下载。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -109,6 +117,17 @@ fun DownloadEngineScreen(
     // 「导入本地内核」与「删除内核」的确认
     var showImportMenu by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    // 视频预览引擎（实验性）：auto / javafx / ffplay + 本机 ffplay 状态与下载进度
+    var previewEngine by remember { mutableStateOf(settingsRepo.previewEngine) }
+    var ffplayPath by remember { mutableStateOf(FfplayManager.currentPath()) }
+    var ffmpegDownloading by remember { mutableStateOf(false) }
+    var ffmpegRead by remember { mutableStateOf(0L) }
+    var ffmpegTotal by remember { mutableStateOf(0L) }
+    var ffmpegJob by remember { mutableStateOf<Job?>(null) }
+    // 私有目录里是否有本应用下载的 FFmpeg（决定显示「卸载」）+ 卸载确认
+    var ffmpegPrivate by remember { mutableStateOf(FfplayManager.hasPrivateInstall()) }
+    var showFfmpegUninstallConfirm by remember { mutableStateOf(false) }
 
     BackHandler { onBack() }
 
@@ -154,7 +173,7 @@ fun DownloadEngineScreen(
         provisionJob = scope.launch {
             try {
                 GopeedKernelProvisioner.provision(
-                    mirrorPrefix = settingsRepo.githubMirrorPrefix
+                    mirrorPrefix = GitHubMirror.activePrefix()
                 ) { p -> progress = p }
                 progress = null
                 SnackbarController.show("Gopeed 内核已就绪")
@@ -240,12 +259,58 @@ fun DownloadEngineScreen(
         }
     }
 
+    /** 下载 / 更新 FFmpeg 精简版到应用私有目录（ffplay 在线预览 + DASH 合轨都用它） */
+    fun downloadFfmpeg() {
+        if (ffmpegDownloading) return
+        ffmpegDownloading = true
+        ffmpegRead = 0L
+        ffmpegTotal = 0L
+        ffmpegJob = scope.launch {
+            try {
+                FfplayManager.download { read, total ->
+                    ffmpegRead = read
+                    ffmpegTotal = total
+                }.onSuccess {
+                    ffplayPath = FfplayManager.currentPath()
+                    ffmpegPrivate = FfplayManager.hasPrivateInstall()
+                    SnackbarController.show("FFmpeg 已就绪，视频预览与合轨将使用它")
+                }.onFailure {
+                    SnackbarController.show("下载失败：${it.message ?: "未知错误"}")
+                }
+            } catch (c: CancellationException) {
+                SnackbarController.show("已取消下载")
+                throw c
+            } catch (t: Throwable) {
+                SnackbarController.show("下载失败：${t.message ?: "未知错误"}")
+            } finally {
+                ffmpegDownloading = false
+                ffmpegJob = null
+            }
+        }
+    }
+
+    /** 卸载应用私有目录里的 FFmpeg（只删本应用下载的副本，系统里已装的不动） */
+    fun uninstallFfmpeg() {
+        scope.launch {
+            val removed = withContext(Dispatchers.IO) { FfplayManager.uninstall() }
+            ffmpegPrivate = FfplayManager.hasPrivateInstall()
+            ffplayPath = FfplayManager.currentPath()
+            SnackbarController.show(
+                when {
+                    removed && ffplayPath != null -> "已删除本应用下载的 FFmpeg（现使用本机已安装的 FFmpeg）"
+                    removed -> "FFmpeg 已卸载，预览与合轨将回退内置方案"
+                    else -> "卸载失败：文件可能正在使用（请先关闭视频预览）"
+                }
+            )
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("下载引擎", style = MaterialTheme.typography.titleLarge) },
+                title = { Text("引擎管理", style = MaterialTheme.typography.titleLarge) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -390,6 +455,130 @@ fun DownloadEngineScreen(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text("删除内核", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // ===== 视频预览引擎（实验性）=====
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.PlayCircleOutline, contentDescription = null)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = "视频预览引擎",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        ) {
+                            Text(
+                                text = "实验性",
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "影响解析页的在线预览与哔哩哔哩等分轨视频的合轨。FFplay 由 FFmpeg 精简版提供，" +
+                            "不随安装包发布，需要在这里下载；本机已装 FFmpeg（PATH / 常见目录）时会自动命中。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    listOf(
+                        SettingsRepository.PREVIEW_AUTO to "自动（推荐）：有 FFplay 就用，否则回退内置",
+                        SettingsRepository.PREVIEW_FFPLAY to "FFplay：边下边播、拖动无需整段重下",
+                        SettingsRepository.PREVIEW_JAVA_FX to "内置 JavaFX：先缓存再播，兼容性最好但较慢"
+                    ).forEach { (value, label) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = previewEngine == value,
+                                onClick = {
+                                    previewEngine = value
+                                    settingsRepo.previewEngine = value
+                                    SnackbarController.show("预览引擎已切换")
+                                }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    KeyValueRow("FFplay 状态", ffplayPath ?: "未检测到（可下载 FFmpeg 精简版，约 50–90MB）")
+
+                    Spacer(Modifier.height(14.dp))
+                    if (ffmpegDownloading) {
+                        LinearProgressIndicator(
+                            progress = {
+                                if (ffmpegTotal > 0) {
+                                    (ffmpegRead.toFloat() / ffmpegTotal.toFloat()).coerceIn(0f, 1f)
+                                } else {
+                                    0f
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = when {
+                                    ffmpegTotal > 0 -> "${formatSize(ffmpegRead)} / ${formatSize(ffmpegTotal)}"
+                                    ffmpegRead > 0 -> "已下载 ${formatSize(ffmpegRead)}"
+                                    else -> "正在测速并选择最快镜像…"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { ffmpegJob?.cancel() }) { Text("取消下载") }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(onClick = { downloadFfmpeg() }, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Outlined.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (ffplayPath == null) "下载 FFmpeg 精简版" else "重新下载 / 更新 FFmpeg")
+                            }
+                            // 只有「本应用下载过」才给卸载：系统 PATH / 常见目录里的 FFmpeg 不归我们管
+                            if (ffmpegPrivate) {
+                                Spacer(Modifier.width(8.dp))
+                                OutlinedButton(onClick = { showFfmpegUninstallConfirm = true }) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("卸载", color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -556,6 +745,30 @@ fun DownloadEngineScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showFfmpegUninstallConfirm) {
+        FadeAlertDialog(
+            visible = true,
+            onDismissRequest = { showFfmpegUninstallConfirm = false },
+            title = { Text("卸载 FFmpeg？") },
+            text = {
+                Text(
+                    "将删除本应用下载到私有目录的 FFmpeg（ffplay / ffmpeg / ffprobe，约 50–90MB）。\n\n" +
+                        "系统里另装的 FFmpeg 不受影响；卸载后视频预览与分轨合轨会回退到内置方案，" +
+                        "需要时可随时重新下载。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showFfmpegUninstallConfirm = false
+                    uninstallFfmpeg()
+                }) { Text("卸载", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFfmpegUninstallConfirm = false }) { Text("取消") }
             }
         )
     }

@@ -74,7 +74,9 @@ private const val WHEEL_STEP = 1.15f
 fun ImageViewerOverlay(
     url: String?,
     onDismiss: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** 图片直链的请求头（视频图集防盗链）；默认空表 = 原行为 */
+    headers: Map<String, String> = emptyMap()
 ) {
     val link = url?.trim().orEmpty()
     // ★ 关闭时不能立刻退出组合：留一份「上一次打开的链接」跑完淡出动画，否则关图是硬切。
@@ -85,8 +87,11 @@ fun ImageViewerOverlay(
     if (lastLink.isEmpty()) return
     val shownLink = lastLink
 
-    val bitmap by produceState<ImageBitmap?>(initialValue = RemoteImageLoader.cached(shownLink), shownLink) {
-        if (value == null) value = RemoteImageLoader.load(shownLink)
+    val bitmap by produceState<ImageBitmap?>(
+        initialValue = RemoteImageLoader.cached(shownLink, headers),
+        shownLink, headers
+    ) {
+        if (value == null) value = RemoteImageLoader.load(shownLink, headers)
     }
 
     // Esc 关闭（注册在本页 BackHandler 之后，故优先于「返回上一页」）；淡出期间已不再拦截 Esc

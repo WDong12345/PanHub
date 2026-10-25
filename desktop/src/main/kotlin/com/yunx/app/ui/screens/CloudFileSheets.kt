@@ -1,10 +1,7 @@
 package com.yunx.app.ui.screens
 
+import com.yunx.app.ui.theme.Motion
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -77,7 +74,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 文件操作菜单类型（FileActionSheet 内切换）；对文件行内联按钮开放，用于直达指定步骤 */
+/** 文件操作菜单类型（FileActionSheet 内切换） */
 internal enum class ActionStep { MENU, MOVE, SHARE, RENAME, DELETE }
 
 /** 有效期选项：名称 + UI 中性码（[ShareExpire]；各平台 API 取值不同，由 ViewModel 负责转换） */
@@ -91,14 +88,15 @@ private val expireOptions = listOf(
 /**
  * 夸克云盘文件操作弹窗：更多按钮 → 操作菜单（下载/分享/移动/重命名/删除），
  * 内部按步骤切换：移动选目录 / 分享设置 / 重命名输入 / 删除确认。
- * @param initialStep 打开时停在的步骤；行尾内联按钮传入具体动作，跳过菜单直接进对应步骤
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun FileActionSheet(
     file: ShareFile,
     viewModel: QuarkCloudViewModel,
+    /** 初始步骤：行尾内联按钮直接落到对应步骤，不再从菜单点起 */
     initialStep: ActionStep = ActionStep.MENU,
+    onMultiSelect: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     var step by remember(initialStep) { mutableStateOf(initialStep) }
@@ -150,7 +148,13 @@ internal fun FileActionSheet(
                     step = ActionStep.MOVE
                 },
                 onRename = { step = ActionStep.RENAME },
-                onDelete = { step = ActionStep.DELETE }
+                onDelete = { step = ActionStep.DELETE },
+                onMultiSelect = onMultiSelect?.let { select ->
+                    {
+                        select()
+                        onDismiss()
+                    }
+                }
             )
 
             ActionStep.MOVE -> MoveStep(
@@ -207,7 +211,8 @@ private fun ActionMenu(
     onShare: () -> Unit,
     onMove: () -> Unit,
     onRename: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onMultiSelect: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -306,6 +311,15 @@ private fun ActionMenu(
             tint = MaterialTheme.colorScheme.primary,
             onClick = onRename
         )
+        if (onMultiSelect != null) {
+            ActionItem(
+                icon = Icons.Outlined.CheckCircle,
+                title = "多选",
+                desc = "勾选多个项目批量下载 / 分享 / 移动 / 删除",
+                tint = MaterialTheme.colorScheme.primary,
+                onClick = onMultiSelect
+            )
+        }
         ActionItem(
             icon = Icons.Outlined.Delete,
             title = "删除",
@@ -385,7 +399,7 @@ private fun MoveStep(
         // 移动目录切换：淡入过渡
         AnimatedContent(
             targetState = moveState,
-            transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+            transitionSpec = { Motion.fade(180, 140) },
             label = "moveState"
         ) { s ->
             when (s) {
@@ -1128,7 +1142,7 @@ private fun BatchMoveStep(
         // 移动目录切换：淡入过渡
         AnimatedContent(
             targetState = moveState,
-            transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+            transitionSpec = { Motion.fade(180, 140) },
             label = "batchMoveState"
         ) { s ->
             when (s) {

@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.m3.Markdown
+import com.yunx.app.data.network.GitHubMirror
 import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.data.update.UpdateChecker
 import com.yunx.app.ui.components.FadeAlertDialog
@@ -55,10 +56,8 @@ fun UpdateDialog(
 ) {
     val exeAsset = release.assets.firstOrNull { it.name.endsWith(".exe", true) }
     val zipAsset = release.assets.firstOrNull { it.name.endsWith(".zip", true) }
-    // 说明里的图片复用 README 的自研加载器（无 Coil，可走设置的镜像加速）
-    GitHubMarkdownImageTransformer.mirrorPrefix = remember {
-        SettingsRepository().githubMirrorPrefix?.ifBlank { null }
-    }
+    // 说明里的图片复用 README 的自研加载器（无 Coil，走 GitHubMirror 统一镜像加速）
+    GitHubMarkdownImageTransformer.mirrorPrefix = GitHubMirror.activePrefix()
     // 紧凑字号：与 README 共用同一份排版（见 ui/theme/Type.kt）
     val noteTypography = remember { compactMarkdownTypography() }
 

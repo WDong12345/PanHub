@@ -1,5 +1,7 @@
 package com.yunx.app.ui.screens
 
+import com.yunx.app.ui.theme.Motion
+import com.yunx.app.ui.theme.animateItemIfAllowed
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -7,7 +9,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -66,21 +68,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.isSecondaryPressed
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.yunx.app.data.db.DownloadTaskEntity
 import com.yunx.app.data.download.DownloadGrouping
@@ -138,7 +136,7 @@ fun DownloadScreen(
         // 用 AnimatedContent（而不是 Crossfade）便于后续按状态差异再定制过渡。
         AnimatedContent(
             targetState = tasks.isEmpty(),
-            transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+            transitionSpec = { Motion.fade(180, 140) },
             label = "downloadListState"
         ) { empty ->
             if (empty) {
@@ -166,9 +164,7 @@ fun DownloadScreen(
                         .weight(1f)
                         .fillMaxWidth()
                         .nestedScroll(scrollBehavior.nestedScrollConnection),
-                    // 底部留出悬浮「+」按钮的高度：否则列表最后一项（常是文件夹组头，
-                    // 上面就有批量暂停/删除按钮）会被按钮盖住，点删除实际点到「+」
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 140.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     // 根目录任务（无相对路径）单独显示
@@ -182,7 +178,7 @@ fun DownloadScreen(
 
                     items(rootTasks, key = { it.id }) { task ->
                         DownloadTaskCard(
-                            modifier = Modifier.animateItem(),
+                            modifier = animateItemIfAllowed(),
                             task = task,
                             stats = stats[task.id],
                             onPause = { viewModel.pause(task.id) },
@@ -198,7 +194,7 @@ fun DownloadScreen(
                         val saveRoot = DownloadGrouping.folderSaveRoot(groupTasks.first(), globalSaveRoot)
                         item(key = "folder_${groupKey.first}_$folder") {
                             FolderDownloadGroup(
-                                modifier = Modifier.animateItem(),
+                                modifier = animateItemIfAllowed(),
                                 folder = folder,
                                 saveRoot = saveRoot,
                                 tasks = groupTasks,
@@ -269,13 +265,20 @@ fun DownloadScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     if (hasCompletedFile) {
+                        // #204：整行可点
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .toggleable(
+                                    value = deleteAllLocal,
+                                    role = Role.Checkbox,
+                                    onValueChange = { deleteAllLocal = it }
+                                ),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Checkbox(
                                 checked = deleteAllLocal,
-                                onCheckedChange = { deleteAllLocal = it }
+                                onCheckedChange = null
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
@@ -306,9 +309,8 @@ fun DownloadScreen(
                 TextButton(onClick = { showDeleteAllConfirm = false }) { Text("取消") }
             }
         )
-    }
 
-    // 文件夹组批量删除确认：与单条删除一致，可选择是否一并删本地文件
+    // 文件夹组批量删除确认
     pendingGroupDelete?.let { group ->
         var deleteGroupLocal by remember(group) { mutableStateOf(false) }
         val hasCompletedFile = group.any {
@@ -325,25 +327,11 @@ fun DownloadScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     if (hasCompletedFile) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = deleteGroupLocal,
-                                onCheckedChange = { deleteGroupLocal = it }
-                            )
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = deleteGroupLocal, onCheckedChange = { deleteGroupLocal = it })
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "同时删除已下载的本地文件",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
+                            Text("同时删除已下载的本地文件", style = MaterialTheme.typography.bodyMedium)
                         }
-                        Text(
-                            text = "勾选后将一并删除该文件夹内已下载到 Download 目录的文件，且不可恢复。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                     }
                 }
             },
@@ -354,15 +342,12 @@ fun DownloadScreen(
                         pendingGroupDelete = null
                         viewModel.removeTasks(ids, deleteGroupLocal)
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    )
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) { Text("删除 ${group.size} 项") }
             },
-            dismissButton = {
-                TextButton(onClick = { pendingGroupDelete = null }) { Text("取消") }
-            }
+            dismissButton = { TextButton(onClick = { pendingGroupDelete = null }) { Text("取消") } }
         )
+    }
     }
 }
 
@@ -432,13 +417,20 @@ private fun DeleteConfirmDialog(
                     style = MaterialTheme.typography.bodyMedium
                 )
                 if (hasLocalFile) {
+                    // #204：整行可点（不只是勾选框本身），点文字也能切换
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .toggleable(
+                                value = deleteLocal,
+                                role = Role.Checkbox,
+                                onValueChange = { deleteLocal = it }
+                            ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Checkbox(
                             checked = deleteLocal,
-                            onCheckedChange = { deleteLocal = it }
+                            onCheckedChange = null
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
@@ -641,10 +633,7 @@ private fun FolderDownloadGroup(
                         it.status == DownloadTaskEntity.STATUS_FAILED
                 }
                 if (groupActive) {
-                    IconButton(
-                        onClick = { onPauseGroup(tasks) },
-                        modifier = Modifier.size(34.dp)
-                    ) {
+                    IconButton(onClick = { onPauseGroup(tasks) }, modifier = Modifier.size(34.dp)) {
                         Icon(
                             imageVector = Icons.Outlined.Pause,
                             contentDescription = "暂停文件夹内全部任务",
@@ -653,10 +642,7 @@ private fun FolderDownloadGroup(
                         )
                     }
                 } else if (groupResumable) {
-                    IconButton(
-                        onClick = { onResumeGroup(tasks) },
-                        modifier = Modifier.size(34.dp)
-                    ) {
+                    IconButton(onClick = { onResumeGroup(tasks) }, modifier = Modifier.size(34.dp)) {
                         Icon(
                             imageVector = Icons.Outlined.PlayArrow,
                             contentDescription = "继续文件夹内全部任务",
@@ -665,10 +651,7 @@ private fun FolderDownloadGroup(
                         )
                     }
                 }
-                IconButton(
-                    onClick = { onRemoveGroup(tasks) },
-                    modifier = Modifier.size(34.dp)
-                ) {
+                IconButton(onClick = { onRemoveGroup(tasks) }, modifier = Modifier.size(34.dp)) {
                     Icon(
                         imageVector = Icons.Outlined.Delete,
                         contentDescription = "删除文件夹内全部任务",
@@ -702,27 +685,14 @@ private fun FolderDownloadGroup(
                         )
                     }
                     // 子任务列表（紧凑行，含子文件夹内文件）
-                    // 按相对路径排序：同一子目录的文件相邻，缩进出来的层级才是连续的
-                    // 左侧竖线 + 逐级缩进，让「文件夹 > 子文件夹 > 文件」的从属关系一眼可见
-                    val guideColor = MaterialTheme.colorScheme.outlineVariant
                     Column(
-                        modifier = Modifier
-                            .padding(start = 28.dp, end = 10.dp, top = 2.dp, bottom = 10.dp)
-                            .drawBehind {
-                                drawLine(
-                                    color = guideColor,
-                                    start = Offset(0f, 0f),
-                                    end = Offset(0f, size.height),
-                                    strokeWidth = 2.dp.toPx()
-                                )
-                            },
+                        modifier = Modifier.padding(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        tasks.sortedBy { it.fileName.lowercase() }.forEach { task ->
+                        tasks.forEach { task ->
                             DownloadSubTaskRow(
                                 task = task,
                                 stats = stats[task.id],
-                                depth = (task.fileName.count { it == '/' } - 1).coerceAtLeast(0),
                                 onPause = { onPause(task.id) },
                                 onResume = { onResume(task.id) },
                                 onRemove = { onRemove(task) },
@@ -740,13 +710,11 @@ private fun FolderDownloadGroup(
 /**
  * 文件夹组内子任务紧凑行：相对路径 + 状态 + 进度条 + 操作按钮。
  * 相比独立任务卡更轻量，适合嵌套在文件夹组内。
- * @param depth 相对顶级目录的层级深度（0 = 直接位于顶级目录下），用于逐级向右缩进
  */
 @Composable
 private fun DownloadSubTaskRow(
     task: DownloadTaskEntity,
     stats: DownloadStats?,
-    depth: Int = 0,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onRemove: () -> Unit,
@@ -767,15 +735,11 @@ private fun DownloadSubTaskRow(
     }
     // 显示相对路径（去掉顶级目录前缀，如 "A/B/b.mp4" → "B/b.mp4"）
     val displayName = task.fileName.substringAfter('/')
-    // 所在子目录弱化显示、文件名正常显示：层级已由缩进表达，前缀只作辅助线索
-    val dirPrefix = displayName.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }
-    val fileNameOnly = displayName.substringAfterLast('/')
     // 长按任务行弹出操作菜单（复制直链 / 重新下载 / 删除）
     var showMenu by remember { mutableStateOf(false) }
 
     Surface(
         modifier = Modifier
-            .padding(start = (depth * 16).dp)
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = {})
@@ -803,14 +767,7 @@ private fun DownloadSubTaskRow(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = buildAnnotatedString {
-                            if (dirPrefix != null) {
-                                withStyle(
-                                    SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                ) { append("$dirPrefix/") }
-                            }
-                            append(fileNameOnly)
-                        },
+                        text = displayName,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,

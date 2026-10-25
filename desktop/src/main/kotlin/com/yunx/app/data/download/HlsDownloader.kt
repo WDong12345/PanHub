@@ -88,9 +88,9 @@ object HlsDownloader {
         }
     }
 
-    private data class FetchedText(val finalUrl: HttpUrl, val text: String)
+    internal data class FetchedText(val finalUrl: HttpUrl, val text: String)
 
-    private suspend fun fetchText(
+    internal suspend fun fetchText(
         startUrl: HttpUrl,
         credentialOrigin: HttpUrl,
         headers: Map<String, String>
@@ -205,7 +205,7 @@ object HlsDownloader {
         return total
     }
 
-    private fun resolveMediaPlaylist(playlistUrl: HttpUrl, text: String): HttpUrl? {
+    internal fun resolveMediaPlaylist(playlistUrl: HttpUrl, text: String): HttpUrl? {
         val lines = text.lineSequence().toList()
         for (index in lines.indices) {
             if (lines[index].startsWith("#EXT-X-STREAM-INF")) {
@@ -218,7 +218,7 @@ object HlsDownloader {
         return playlistUrl
     }
 
-    private fun parseSegments(text: String): List<String> = buildList {
+    internal fun parseSegments(text: String): List<String> = buildList {
         for (line in text.lineSequence()) {
             val value = line.trim()
             if (value.isNotBlank() && !value.startsWith("#")) {
@@ -228,7 +228,7 @@ object HlsDownloader {
         }
     }
 
-    private fun parseMapUri(text: String): String? {
+    internal fun parseMapUri(text: String): String? {
         val line = text.lineSequence().firstOrNull { it.startsWith("#EXT-X-MAP") } ?: return null
         return Regex("""URI="([^"]+)"""").find(line)?.groupValues?.get(1)
     }

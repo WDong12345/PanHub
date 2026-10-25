@@ -2,6 +2,8 @@ package com.yunx.app.ui.screens
 
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.ui.BackHandler
+import com.yunx.app.ui.theme.Motion
+import com.yunx.app.ui.theme.animateItemIfAllowed
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -9,8 +11,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -31,10 +30,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.CreateNewFolder
-import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -77,16 +76,18 @@ import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.prefs.SettingsRepository
 import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
-import com.yunx.app.ui.components.DirTreePanel
 import com.yunx.app.ui.components.ScrollToTopButton
 import com.yunx.app.ui.components.rememberDownloadDirPicker
-import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.BackToParentItem
 import com.yunx.app.ui.resolve.CrumbBar
-import com.yunx.app.ui.resolve.FileRowAction
 import com.yunx.app.ui.resolve.ShareFileRow
 import com.yunx.app.ui.viewmodel.BaiduCloudUiState
 import com.yunx.app.ui.viewmodel.BaiduCloudViewModel
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material.icons.outlined.Layers
+import com.yunx.app.ui.components.DirTreePanel
+import com.yunx.app.ui.resolve.FileRowAction
 
 /** 百度非会员限速阈值：>300MB 提示 */
 private const val BAIDU_LIMIT_BYTES = 300L * 1024 * 1024
@@ -150,8 +151,8 @@ fun BaiduCloudScreen(
 
     // 列表切到哪个目录，左侧树就把那条路径逐级展开并滚到看得见
     LaunchedEffect(state) {
-        val s = state
-        if (s is BaiduCloudUiState.Loaded) viewModel.dirTree.reveal(viewModel.currentPathFids)
+        val st = state
+        if (st is BaiduCloudUiState.Loaded) viewModel.dirTree.reveal(viewModel.currentPathFids)
     }
 
     LaunchedEffect(viewModel.cloudMessage) {
@@ -168,6 +169,7 @@ fun BaiduCloudScreen(
         }
     }
 
+
     Surface(
         modifier = modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.surface
@@ -175,7 +177,7 @@ fun BaiduCloudScreen(
         AnimatedContent(
             targetState = state,
             transitionSpec = {
-                fadeIn(tween(200)) togetherWith fadeOut(tween(140))
+                Motion.fade(200, 140)
             },
             label = "baiduCloudState"
         ) { s ->
@@ -206,25 +208,25 @@ fun BaiduCloudScreen(
                 }
 
                 is BaiduCloudUiState.Loaded -> Box(modifier = Modifier.fillMaxSize()) {
-                    // 左树右列表：树只管「跳到哪个目录」，列表仍是该目录的内容，两者共用 VM
+                    // 左树右列表：树只管「跳到哪个目录」，列表仍是该目录的内容，两者共用 VM。
                     // 覆盖层（回到顶部/批量栏）留在外层 Box 里：这版 Compose 只有 RowScope/ColumnScope 的
                     // AnimatedVisibility，被 Row 包着会让它去取无法跨 composable lambda 捕获的 RowScope 接收者。
                     Row(modifier = Modifier.fillMaxSize()) {
-                    if (viewModel.dirTree.paneVisible) {
-                        DirTreePanel(
-                            state = viewModel.dirTree,
-                            selectedId = s.dirPath,
-                            rootTitle = "百度网盘",
-                            onSelect = { row -> viewModel.openPath(row.pathIds, row.pathNames) },
-                            modifier = Modifier.width(232.dp).fillMaxHeight()
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .width(1.dp)
-                                .background(MaterialTheme.colorScheme.outlineVariant)
-                        )
-                    }
+                        if (viewModel.dirTree.paneVisible) {
+                            DirTreePanel(
+                                state = viewModel.dirTree,
+                                selectedId = s.dirPath,
+                                rootTitle = "百度网盘",
+                                onSelect = { row -> viewModel.openPath(row.pathIds, row.pathNames) },
+                                modifier = Modifier.width(232.dp).fillMaxHeight()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .width(1.dp)
+                                    .background(MaterialTheme.colorScheme.outlineVariant)
+                            )
+                        }
                     LazyColumn(
                             state = listState,
                             modifier = Modifier
@@ -334,7 +336,7 @@ fun BaiduCloudScreen(
                             items(s.files, key = { it.fid }) { file ->
                                 ShareFileRow(
                                     file = file,
-                                    modifier = Modifier.animateItem(),
+                                    modifier = animateItemIfAllowed(),
                                     onClick = {
                                         if (viewModel.multiSelectMode) {
                                             viewModel.toggleSelect(file)
@@ -345,41 +347,57 @@ fun BaiduCloudScreen(
                                             showActionSheet = true
                                         }
                                     },
-                                    // 行尾内联操作：三点菜单里的动作直接铺到行上，一点到位
-                                    // （多选模式收起，改由底部批量栏承担）
+
+                                    // 行尾内联操作：三点菜单里的动作直接铺到行上，一点到位（多选模式收起）
+
                                     actions = if (viewModel.multiSelectMode) emptyList() else buildList {
+
                                         add(FileRowAction(label = if (file.isdir) "下载文件夹" else "下载", icon = Icons.Outlined.Download) {
+
                                             viewModel.openActions(file)
-                                            if (file.isdir) {
-                                                viewModel.downloadFolder()
-                                            } else {
-                                                // 非会员 >300MB 的限速确认仍然要走：确认后才 downloadFile()
-                                                maybeShowBaiduLimit(listOf(file), "single") { viewModel.downloadFile() }
-                                            }
+
+                                            if (file.isdir) viewModel.downloadFolder() else viewModel.downloadFile()
+
+                                            viewModel.dismissActions()
+
                                         })
+
                                         add(FileRowAction(label = "分享", icon = Icons.Outlined.Share) {
+
                                             viewModel.openActions(file)
+
                                             showShare = true
+
                                         })
+
                                         add(FileRowAction(label = "移动到", icon = Icons.Outlined.DriveFileMove) {
+
                                             viewModel.openActions(file)
+
                                             viewModel.openMoveRoot()
+
                                             showMove = true
+
                                         })
+
                                         add(FileRowAction(label = "重命名", icon = Icons.Outlined.Edit) {
+
                                             viewModel.openActions(file)
+
                                             showRename = true
+
                                         })
+
                                         add(FileRowAction(label = "删除", icon = Icons.Outlined.Delete, destructive = true) {
+
                                             viewModel.openActions(file)
+
                                             showDeleteConfirm = true
+
                                         })
+
                                     },
-                                    onLongClick = if (!viewModel.multiSelectMode) {
-                                        { viewModel.enterMultiSelect(file) }
-                                    } else {
-                                        null
-                                    },
+
                                     selected = viewModel.selected.contains(file),
                                     showCheckbox = viewModel.multiSelectMode
                                 )
@@ -485,6 +503,10 @@ fun BaiduCloudScreen(
             onDelete = {
                 showActionSheet = false
                 showDeleteConfirm = true
+            },
+            onMultiSelect = {
+                showActionSheet = false
+                viewModel.actionFile?.let { viewModel.enterMultiSelect(it) }
             },
             onDismiss = {
                 showActionSheet = false
@@ -642,6 +664,7 @@ private fun BaiduActionSheet(
     onMove: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
+    onMultiSelect: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -696,6 +719,9 @@ private fun BaiduActionSheet(
             BaiduActionItem(Icons.Outlined.Share, "分享", "生成分享链接（带提取码）", MaterialTheme.colorScheme.primary, onShare)
             BaiduActionItem(Icons.Outlined.DriveFileMove, "移动到", "移动到网盘的其他目录", MaterialTheme.colorScheme.primary, onMove)
             BaiduActionItem(Icons.Outlined.Edit, "重命名", "修改文件名", MaterialTheme.colorScheme.primary, onRename)
+            if (onMultiSelect != null) {
+                BaiduActionItem(Icons.Outlined.CheckCircle, "多选", "勾选多个项目批量下载 / 分享 / 移动 / 删除", MaterialTheme.colorScheme.primary, onMultiSelect)
+            }
             BaiduActionItem(Icons.Outlined.Delete, "删除", "删除到回收站", MaterialTheme.colorScheme.error, onDelete)
         }
     }
@@ -804,7 +830,7 @@ private fun BaiduMoveSheet(
             }
             AnimatedContent(
                 targetState = moveState,
-                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+                transitionSpec = { Motion.fade(180, 140) },
                 label = "baiduMoveState"
             ) { s ->
                 when (s) {

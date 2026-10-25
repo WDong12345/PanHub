@@ -71,7 +71,12 @@ fun RemoteImage(
      */
     fixedHeight: Dp? = null,
     /** 非空时图片可点击（如单击放大查看）：点击区 = 图片本身大小，桌面显示手型光标 */
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    /**
+     * 加载图片时附带的请求头（Referer / User-Agent / Cookie）。
+     * 视频平台的图集直链多数有防盗链，不带就会 403；默认空表 = 原行为。
+     */
+    headers: Map<String, String> = emptyMap()
 ) {
     val link = url?.trim().orEmpty()
     val clickModifier = if (onClick != null) {
@@ -79,18 +84,18 @@ fun RemoteImage(
     } else {
         Modifier
     }
-    var failed by remember(link) { mutableStateOf(false) }
+    var failed by remember(link, headers) { mutableStateOf(false) }
     // 已缓存过的图直接当初始值：重组 / 回退到本页时不会先闪一下占位色
     val bitmap by produceState<ImageBitmap?>(
-        initialValue = if (link.isEmpty()) null else RemoteImageLoader.cached(link),
-        link
+        initialValue = if (link.isEmpty()) null else RemoteImageLoader.cached(link, headers),
+        link, headers
     ) {
         if (link.isEmpty()) {
             value = null
             return@produceState
         }
         if (value == null) {
-            val loaded = RemoteImageLoader.load(link)
+            val loaded = RemoteImageLoader.load(link, headers)
             failed = loaded == null
             value = loaded
         }

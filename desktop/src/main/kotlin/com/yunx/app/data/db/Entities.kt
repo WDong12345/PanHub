@@ -178,6 +178,12 @@ data class DownloadTaskEntity(
     val directPart: String = "",
     /** 直写模式：0=非直写，1=单线程直写，2=多线程直写 */
     val directMode: Int = 0,
+    /** DASH 分轨下载的音轨地址（哔哩哔哩高清）；空串 = 单文件下载 */
+    val mergeAudioUrl: String = "",
+    /** 音轨请求头 JSON（落库前按 `download.mergeAudioHeaders` 加密）；空串 = 无 */
+    val mergeAudioHeadersJson: String = "",
+    /** 动图资源地址（Motion Photo 合成用）；空串 = 普通静图 */
+    val motionUrl: String = "",
     val createTime: Long = System.currentTimeMillis()
 ) {
     companion object {

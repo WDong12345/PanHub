@@ -126,6 +126,23 @@ interface LanzouAccountDao {
     suspend fun clear()
 }
 
+/**
+ * 视频解析账号。所有平台共用一张表，因此**按 platform 过滤**的查询都要带上平台条件
+ * （[setPrimary] / [clearPlatform] 尤其注意：不带平台条件会把别的平台的账号一起动掉）。
+ */
+interface VideoAccountDao {
+    fun observeAccounts(): Flow<List<VideoAccountEntity>>
+    fun observeAccountsOf(platform: String): Flow<List<VideoAccountEntity>>
+    suspend fun getAccounts(): List<VideoAccountEntity>
+    suspend fun getActive(platform: String): VideoAccountEntity?
+    suspend fun countOf(platform: String): Int
+    suspend fun upsert(account: VideoAccountEntity)
+    suspend fun setPrimary(platform: String, id: String)
+    suspend fun updateRemark(id: String, remark: String)
+    suspend fun deleteById(id: String)
+    suspend fun clearPlatform(platform: String)
+}
+
 interface DownloadTaskDao {
     fun observeAll(): Flow<List<DownloadTaskEntity>>
     suspend fun insert(task: DownloadTaskEntity): Long

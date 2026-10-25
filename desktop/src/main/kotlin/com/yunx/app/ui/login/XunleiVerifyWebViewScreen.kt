@@ -11,17 +11,18 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.yunx.app.util.DesktopActions
 
 /**
  * 迅雷安全验证（桌面版）：
- * 桌面无内嵌浏览器，进入时自动在系统浏览器打开验证页，
+ * 验证页由用户点「打开验证页」在系统浏览器打开（**不自动拉起浏览器**，
+ * 自动弹浏览器会让用户误以为应用劫持了默认浏览器）；
  * 用户完成验证后回到应用点击「验证完成，重新登录」重试密码登录。
  */
 @Composable
@@ -32,13 +33,6 @@ fun XunleiVerifyWebViewScreen(
     onBack: () -> Unit
 ) {
     BackHandler { onBack() }
-
-    // 进入验证屏自动在系统浏览器打开一次验证页
-    LaunchedEffect(Unit) {
-        if (verifyUrl.isNotBlank()) {
-            DesktopActions.openUrl(verifyUrl)
-        }
-    }
 
     AlertDialog(
         onDismissRequest = onBack,
@@ -52,11 +46,18 @@ fun XunleiVerifyWebViewScreen(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "1. 已在系统浏览器打开验证页，请完成人机验证\n" +
+                    text = "1. 点击下方「打开验证页」，在系统浏览器里完成人机验证\n" +
                         "2. 验证成功后，回到本窗口点击「验证完成，重新登录」",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { if (verifyUrl.isNotBlank()) DesktopActions.openUrl(verifyUrl) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("打开验证页")
+                }
             }
         },
         confirmButton = {

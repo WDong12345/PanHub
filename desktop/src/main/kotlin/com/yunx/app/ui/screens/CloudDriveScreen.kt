@@ -2,6 +2,8 @@ package com.yunx.app.ui.screens
 
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.ui.BackHandler
+import com.yunx.app.ui.theme.Motion
+import com.yunx.app.ui.theme.animateItemIfAllowed
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -9,8 +11,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -33,9 +32,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.CreateNewFolder
-import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.DriveFileMove
-import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
@@ -65,15 +62,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
-import com.yunx.app.ui.components.DirTreePanel
 import com.yunx.app.ui.components.ScrollToTopButton
 import com.yunx.app.ui.resolve.BackToParentItem
 import com.yunx.app.ui.resolve.CrumbBar
-import com.yunx.app.ui.resolve.FileRowAction
 import com.yunx.app.ui.resolve.ShareFileRow
-import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.ui.viewmodel.QuarkCloudUiState
 import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material.icons.outlined.Layers
+import com.yunx.app.ui.components.DirTreePanel
+import com.yunx.app.ui.resolve.FileRowAction
+import androidx.compose.material.icons.outlined.Edit
 
 /**
  * 夸克云盘浏览页：展示个人网盘文件，支持进入文件夹 / 返回 / 面包屑回退。
@@ -101,23 +101,19 @@ fun CloudDriveScreen(
     var showBatchActions by remember { mutableStateOf(false) }
     var batchInitial by remember { mutableStateOf(com.yunx.app.ui.screens.BatchStep.MENU) }
     // 批量删除二次确认
+    // 行尾内联按钮要直达的操作步骤（点文件行仍是完整菜单，内联按钮跳过菜单进对应步骤）
+    var actionStep by remember { mutableStateOf(ActionStep.MENU) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     // 新建文件夹弹窗（窗口内覆盖层）
     var showCreateFolder by remember { mutableStateOf(false) }
-    // 行尾内联按钮要直达的操作步骤（点文件行仍是完整菜单，内联按钮跳过菜单进对应步骤）
-    var actionStep by remember { mutableStateOf(ActionStep.MENU) }
-    val openActionStep: (ShareFile, ActionStep) -> Unit = { file, step ->
-        viewModel.openActions(file)
-        actionStep = step
-    }
-
-    // 列表切到哪个目录，左侧树就把那条路径逐级展开并滚到看得见
-    LaunchedEffect(state) {
-        val s = state
-        if (s is QuarkCloudUiState.Loaded) viewModel.dirTree.reveal(viewModel.currentPathFids)
-    }
 
     // 操作结果提示（放在本层：弹窗关闭后仍能正常弹出）
+    // 列表切到哪个目录，左侧树就把那条路径逐级展开并滚到看得见
+    LaunchedEffect(state) {
+        val st = state
+        if (st is QuarkCloudUiState.Loaded) viewModel.dirTree.reveal(viewModel.currentPathFids)
+    }
+
     LaunchedEffect(viewModel.cloudMessage) {
         viewModel.cloudMessage?.let {
             SnackbarController.show(it)
@@ -133,6 +129,7 @@ fun CloudDriveScreen(
         }
     }
 
+
     // 不透明背景包裹：避免 Tab 内切换时透出下层内容（账号列表）导致视觉重叠
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -142,7 +139,7 @@ fun CloudDriveScreen(
         AnimatedContent(
             targetState = state,
             transitionSpec = {
-                fadeIn(tween(200)) togetherWith fadeOut(tween(140))
+                Motion.fade(200, 140)
             },
             label = "cloudState"
         ) { s ->
@@ -179,23 +176,21 @@ fun CloudDriveScreen(
                 // 覆盖层（回到顶部/批量栏）留在外层 Box 里：这版 Compose 只有 RowScope/ColumnScope 的
                 // AnimatedVisibility，被 Row 包着会让它去取无法跨 composable lambda 捕获的 RowScope 接收者。
                 Row(modifier = Modifier.fillMaxSize()) {
-                if (viewModel.dirTree.paneVisible) {
-                    DirTreePanel(
-                        state = viewModel.dirTree,
-                        selectedId = s.dirFid,
-                        rootTitle = "夸克网盘",
-                        onSelect = { row -> viewModel.openPath(row.pathIds, row.pathNames) },
-                        modifier = Modifier
-                            .width(232.dp)
-                            .fillMaxHeight()
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant)
-                    )
-                }
+                    if (viewModel.dirTree.paneVisible) {
+                        DirTreePanel(
+                            state = viewModel.dirTree,
+                            selectedId = s.dirFid,
+                            rootTitle = "夸克网盘",
+                            onSelect = { row -> viewModel.openPath(row.pathIds, row.pathNames) },
+                            modifier = Modifier.width(232.dp).fillMaxHeight()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(1.dp)
+                                .background(MaterialTheme.colorScheme.outlineVariant)
+                        )
+                    }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -308,62 +303,67 @@ fun CloudDriveScreen(
             items(s.files, key = { it.fid }) { file ->
                 ShareFileRow(
                     file = file,
-                    modifier = Modifier.animateItem(),
+                    modifier = animateItemIfAllowed(),
                     onClick = {
                         if (viewModel.multiSelectMode) {
                             viewModel.toggleSelect(file)
                         } else if (file.isdir) {
                             viewModel.openFolder(file)
                         } else {
-                            // 复位步骤：否则上次内联按钮留下的 RENAME/DELETE 会让这次点行直接落到那一步
-                            actionStep = ActionStep.MENU
                             viewModel.openActions(file)
                         }
                     },
-                    // 行尾内联操作：三点菜单里的动作铺到每一行，多选模式下收起（交给底部批量栏）
+
+                    // 行尾内联操作：三点菜单里的动作直接铺到行上，一点到位（多选模式收起）
+
                     actions = if (viewModel.multiSelectMode) emptyList() else buildList {
-                        add(
-                            FileRowAction(
-                                label = if (file.isdir) "下载文件夹" else "下载",
-                                icon = Icons.Outlined.Download
-                            ) {
-                                viewModel.openActions(file)
-                                if (file.isdir) viewModel.downloadFolder() else viewModel.downloadFile()
-                                viewModel.dismissActions()
-                            }
-                        )
-                        add(
-                            FileRowAction(label = "分享", icon = Icons.Outlined.Share) {
-                                openActionStep(file, ActionStep.SHARE)
-                            }
-                        )
-                        add(
-                            FileRowAction(label = "移动到", icon = Icons.Outlined.DriveFileMove) {
-                                viewModel.openActions(file)
-                                viewModel.openMoveRoot()
-                                actionStep = ActionStep.MOVE
-                            }
-                        )
-                        add(
-                            FileRowAction(label = "重命名", icon = Icons.Outlined.Edit) {
-                                openActionStep(file, ActionStep.RENAME)
-                            }
-                        )
-                        add(
-                            FileRowAction(
-                                label = "删除",
-                                icon = Icons.Outlined.Delete,
-                                destructive = true
-                            ) {
-                                openActionStep(file, ActionStep.DELETE)
-                            }
-                        )
+
+                        add(FileRowAction(label = if (file.isdir) "下载文件夹" else "下载", icon = Icons.Outlined.Download) {
+
+                            viewModel.openActions(file)
+
+                            if (file.isdir) viewModel.downloadFolder() else viewModel.downloadFile()
+
+                            viewModel.dismissActions()
+
+                        })
+
+                        add(FileRowAction(label = "分享", icon = Icons.Outlined.Share) {
+
+                            viewModel.openActions(file)
+
+                            actionStep = ActionStep.SHARE
+
+                        })
+
+                        add(FileRowAction(label = "移动到", icon = Icons.Outlined.DriveFileMove) {
+
+                            viewModel.openActions(file)
+
+                            viewModel.openMoveRoot()
+
+                            actionStep = ActionStep.MOVE
+
+                        })
+
+                        add(FileRowAction(label = "重命名", icon = Icons.Outlined.Edit) {
+
+                            viewModel.openActions(file)
+
+                            actionStep = ActionStep.RENAME
+
+                        })
+
+                        add(FileRowAction(label = "删除", icon = Icons.Outlined.Delete, destructive = true) {
+
+                            viewModel.openActions(file)
+
+                            actionStep = ActionStep.DELETE
+
+                        })
+
                     },
-                    onLongClick = if (!viewModel.multiSelectMode) {
-                        { viewModel.enterMultiSelect(file) }
-                    } else {
-                        null
-                    },
+
                     selected = viewModel.selected.contains(file),
                     showCheckbox = viewModel.multiSelectMode
                 )
@@ -405,22 +405,26 @@ fun CloudDriveScreen(
                                 showBatchActions = true
                             },
                             MultiSelectAction("删除", Icons.Outlined.Delete, MaterialTheme.colorScheme.error) {
-                                showDeleteConfirm = true
+                                actionStep = ActionStep.DELETE
                             }
                         )
                     )
                 }
-                }
+        }
     }
     }
     }
 
-    // 文件操作弹窗（行尾内联按钮 → 直达对应步骤；点击文件行 → 完整菜单）
+    // 文件操作弹窗（更多按钮/点击文件 → 下载/分享/移动/重命名/删除）
     viewModel.actionFile?.let { file ->
         FileActionSheet(
             file = file,
             viewModel = viewModel,
             initialStep = actionStep,
+            onMultiSelect = {
+                viewModel.dismissActions()
+                viewModel.enterMultiSelect(file)
+            },
             onDismiss = {
                 actionStep = ActionStep.MENU
                 viewModel.dismissActions()

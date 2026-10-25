@@ -1,5 +1,6 @@
 package com.yunx.app.ui.screens
 
+import com.yunx.app.ui.theme.animateItemIfAllowed
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -70,11 +71,15 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mikepenz.markdown.m3.Markdown
 import com.yunx.app.data.db.BookmarkEntity
 import com.yunx.app.data.network.GitHubLinkParser
+import com.yunx.app.data.network.GitHubMirror
 import com.yunx.app.data.network.ShareLinkParser
+import com.yunx.app.data.network.video.VideoLinkParser
 import com.yunx.app.data.network.SharePlatform
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.ui.components.GitHubMarkdownImageTransformer
+import com.yunx.app.ui.components.rememberDownloadDirPicker
+import com.yunx.app.ui.resolve.DownloadLinkDialog
 import com.yunx.app.ui.resolve.LinkHistoryDialog
 import com.yunx.app.ui.resolve.ShareDetailScreen
 import com.yunx.app.ui.theme.compactMarkdownTypography
@@ -120,10 +125,14 @@ fun ResolveScreen(
     homeShortcuts: List<BookmarkEntity> = emptyList(),
     /** 打开「收藏网盘链接」页管理收藏 */
     onManageShortcuts: () -> Unit = {},
+    /** 识别到视频平台链接时交给宿主的视频解析页（网盘解析器不认识这些域名） */
+    onVideoLink: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val state = viewModel.uiState
+    val downloadLink = viewModel.downloadLink
     val downloadError = viewModel.downloadError
+    val pickDownloadDir = rememberDownloadDirPicker()
 
     // 输入框状态提升到页面层：进入详情/文件夹再返回时不清空
     var link by rememberSaveable { mutableStateOf("") }
@@ -131,6 +140,11 @@ fun ResolveScreen(
     var pwdEdited by rememberSaveable { mutableStateOf(false) }
     // 链接历史弹窗可见性（输入页 / 详情页都可触发，故挂载在父层）
     var showHistory by remember { mutableStateOf(false) }
+
+    // 视频链接优先分流：抖音/快手/B站等域名交给视频解析页，其余仍走网盘/GitHub 解析
+    val resolveLink: (String, String?) -> Unit = { text, code ->
+        if (VideoLinkParser.looksLikeVideoLink(text)) onVideoLink(text) else viewModel.startResolve(text, code)
+    }
 
     // 剪贴板分享链接提示状态：待提示的剪贴板文本 + 已忽略的文本
     // 用 rememberSaveable：切换 Tab 后返回仍保留（避免「忽略后切页回来又弹」）
@@ -145,7 +159,8 @@ fun ResolveScreen(
             text.isNotBlank() &&
             text != link &&
             text != ignoredClipboard &&
-            (ShareLinkParser.parse(text) != null || GitHubLinkParser.parse(text) != null)
+            (ShareLinkParser.parse(text) != null || GitHubLinkParser.parse(text) != null ||
+                VideoLinkParser.looksLikeVideoLink(text))
         ) {
             clipboardSuggestion = text
         }
@@ -282,11 +297,8 @@ fun ResolveScreen(
                                     val processed = remember(md, owner, repo, branch, isDarkTheme) {
                                         GitHubMarkdownImageTransformer.preprocessReadme(md, owner, repo, branch, isDarkTheme)
                                     }
-                                    // 注入自研图片加载器的镜像前缀（用户自定义；未配置则直连，与上游一致）
-                                    GitHubMarkdownImageTransformer.mirrorPrefix = remember {
-                                        com.yunx.app.data.prefs.SettingsRepository()
-                                            .githubMirrorPrefix?.ifBlank { null }
-                                    }
+                                    // 注入自研图片加载器的镜像前缀（自动选最快 / 用户固定，统一走 GitHubMirror）
+                                    GitHubMarkdownImageTransformer.mirrorPrefix = GitHubMirror.activePrefix()
                                     // 紧凑字号：与桌面排版体系一致（见 ui/theme/Type.kt）
                                     val compactTypography = remember { compactMarkdownTypography() }
                                     Markdown(
@@ -343,10 +355,11 @@ fun ResolveScreen(
                         if (gh != null) {
                             viewModel.startGitHubResolve(gh)
                         } else {
-                            viewModel.startResolve(bookmark.link, bookmark.pwd.takeIf { it.isNotBlank() })
+                            resolveLink(bookmark.link, bookmark.pwd.takeIf { it.isNotBlank() })
                         }
                     },
-                    onManageShortcuts = onManageShortcuts
+                    onManageShortcuts = onManageShortcuts,
+                    onResolve = resolveLink
                 )
             }
         }
@@ -373,22 +386,31 @@ fun ResolveScreen(
             animatedSuggestion?.let { suggestion ->
                 val parsed = ShareLinkParser.parse(suggestion)
                 val githubParsed = GitHubLinkParser.parse(suggestion)
+                val videoParsed = VideoLinkParser.parse(suggestion)
                 ClipboardSuggestCard(
-                    platformName = when {
-                        githubParsed != null -> "GitHub"
-                        parsed != null -> platformLabel(parsed.platform)
-                        else -> "网盘"
+                    // 标题按识别结果给（视频链接此前一律显示成「网盘」，用户会误解）
+                    title = when {
+                        githubParsed != null -> "检测到 GitHub 分享链接"
+                        parsed != null -> "检测到 ${platformLabel(parsed.platform)}分享链接"
+                        videoParsed != null -> "检测到 ${videoParsed.platform.displayName} 视频链接"
+                        else -> "检测到分享链接"
                     },
                     onPaste = {
-                        link = suggestion
-                        pwd = parsed?.pwd.orEmpty()
-                        pwdEdited = true
                         clipboardSuggestion = null
-                        // GitHub 链接走 ViewModel 的 GitHub 解析入口（复用 ShareDetailScreen 框架）
-                        if (githubParsed != null) {
-                            viewModel.startGitHubResolve(githubParsed)
-                        } else {
-                            viewModel.startResolve(suggestion, parsed?.pwd)
+                        when {
+                            // GitHub 链接走 ViewModel 的 GitHub 解析入口（复用 ShareDetailScreen 框架）
+                            githubParsed != null -> {
+                                link = suggestion
+                                viewModel.startGitHubResolve(githubParsed)
+                            }
+                            // 视频链接直接进视频解析页，不污染网盘输入框
+                            videoParsed != null -> onVideoLink(suggestion)
+                            else -> {
+                                link = suggestion
+                                pwd = parsed?.pwd.orEmpty()
+                                pwdEdited = true
+                                resolveLink(suggestion, parsed?.pwd)
+                            }
                         }
                     },
                     onDismiss = {
@@ -422,6 +444,17 @@ fun ResolveScreen(
         )
     }
 
+    // 下载直链弹窗
+    downloadLink?.let { link ->
+        DownloadLinkDialog(
+            link = link,
+            onDownload = { viewModel.startDownload(link) },
+            onDismiss = { viewModel.dismissDownloadDialog() },
+            saveDir = viewModel.pendingSaveDir.takeIf { it.isNotBlank() },
+            onChangeSaveDir = { pickDownloadDir { viewModel.chooseDownloadDir(it) } }
+        )
+    }
+
     // 链接历史弹窗（输入页与详情页都可触发）
     LinkHistoryDialog(
         visible = showHistory,
@@ -433,7 +466,7 @@ fun ResolveScreen(
             link = url
             pwd = historyPwd
             pwdEdited = true
-            viewModel.startResolve(url, historyPwd.ifBlank { null })
+            resolveLink(url, historyPwd.ifBlank { null })
         },
         onDelete = { viewModel.deleteLinkHistory(it) },
         onClear = { viewModel.clearLinkHistory() }
@@ -460,7 +493,9 @@ private fun ResolveInputContent(
     /** 点击快捷方式：直接解析该收藏链接 */
     onOpenShortcut: (BookmarkEntity) -> Unit,
     /** 打开收藏页管理快捷方式 */
-    onManageShortcuts: () -> Unit
+    onManageShortcuts: () -> Unit,
+    /** 解析入口：内部已做「视频链接 / 网盘链接」分流 */
+    onResolve: (String, String?) -> Unit
 ) {
     val isLoading = state is ResolveUiState.Loading
 
@@ -532,7 +567,7 @@ private fun ResolveInputContent(
                 if (github != null) {
                     viewModel.startGitHubResolve(github)
                 } else {
-                    viewModel.startResolve(link, pwd)
+                    onResolve(link, pwd)
                 }
             },
             modifier = Modifier
@@ -639,7 +674,7 @@ private fun HomeShortcutsSection(
                 items(bookmarks, key = { it.id }) { bookmark ->
                     HomeShortcutTile(
                         bookmark = bookmark,
-                        modifier = Modifier.animateItem(),
+                        modifier = animateItemIfAllowed(),
                         onClick = { onOpen(bookmark) }
                     )
                 }
@@ -725,7 +760,7 @@ private fun platformLabel(platform: SharePlatform): String = when (platform) {
 /** 剪贴板分享链接提示卡片：检测到分享链接时，询问是否粘贴解析 */
 @Composable
 private fun ClipboardSuggestCard(
-    platformName: String,
+    title: String,
     onPaste: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -747,7 +782,7 @@ private fun ClipboardSuggestCard(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = "检测到 $platformName 分享链接",
+                        text = title,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer

@@ -321,6 +321,42 @@ internal object SecureAccountDaos {
             }
         }
 
+    /**
+     * 视频解析账号：凭证只有一个 Cookie 头，加解密与网盘账号同一套列级加密（列名 `video.cookie`）。
+     * 表内多平台共存，因此 setPrimary / clearPlatform 都按 platform 透传，不做跨平台操作。
+     */
+    fun videoAccount(raw: VideoAccountDao, cipher: CredentialCipher): VideoAccountDao = object : VideoAccountDao {
+        override fun observeAccounts(): Flow<List<VideoAccountEntity>> = raw.observeAccounts().map { list ->
+            list.mapNotNull { decryptVideo(raw, cipher, it) }
+        }
+        override fun observeAccountsOf(platform: String): Flow<List<VideoAccountEntity>> =
+            raw.observeAccountsOf(platform).map { list -> list.mapNotNull { decryptVideo(raw, cipher, it) } }
+        override suspend fun getAccounts(): List<VideoAccountEntity> =
+            raw.getAccounts().mapNotNull { decryptVideo(raw, cipher, it) }
+        override suspend fun getActive(platform: String): VideoAccountEntity? =
+            raw.getActive(platform)?.let { decryptVideo(raw, cipher, it) }
+        override suspend fun countOf(platform: String): Int = raw.countOf(platform)
+        override suspend fun upsert(account: VideoAccountEntity) = withContext(Dispatchers.IO) {
+            raw.upsert(encryptVideo(cipher, account))
+        }
+        override suspend fun setPrimary(platform: String, id: String) = raw.setPrimary(platform, id)
+        override suspend fun updateRemark(id: String, remark: String) = raw.updateRemark(id, remark)
+        override suspend fun deleteById(id: String) = raw.deleteById(id)
+        override suspend fun clearPlatform(platform: String) = raw.clearPlatform(platform)
+    }
+
+    private fun encryptVideo(cipher: CredentialCipher, value: VideoAccountEntity) =
+        value.copy(cookie = cipher.encrypt(value.cookie, "video.cookie"))
+
+    private suspend fun decryptVideo(raw: VideoAccountDao, cipher: CredentialCipher, stored: VideoAccountEntity): VideoAccountEntity? =
+        withContext(Dispatchers.IO) {
+            decryptOrNull {
+                val plain = stored.copy(cookie = cipher.decrypt(stored.cookie, "video.cookie"))
+                if (!cipher.isEncrypted(stored.cookie)) raw.upsert(encryptVideo(cipher, plain))
+                plain
+            }
+        }
+
     private fun encryptQuark(cipher: CredentialCipher, value: QuarkAccountEntity) =
         value.copy(cookie = cipher.encrypt(value.cookie, "quark.cookie"))
     private fun encryptUc(cipher: CredentialCipher, value: UCAccountEntity) =

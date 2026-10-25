@@ -2,6 +2,8 @@ package com.yunx.app.ui.screens
 
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.ui.BackHandler
+import com.yunx.app.ui.theme.Motion
+import com.yunx.app.ui.theme.animateItemIfAllowed
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -9,8 +11,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,11 +31,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Share
@@ -73,7 +72,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
-import com.yunx.app.ui.components.DirTreePanel
 import com.yunx.app.ui.components.FadeAlertDialog
 import com.yunx.app.ui.components.ScrollToTopButton
 import com.yunx.app.ui.components.rememberDownloadDirPicker
@@ -81,10 +79,14 @@ import com.yunx.app.ui.items.MultiSelectAction
 import com.yunx.app.ui.items.MultiSelectBar
 import com.yunx.app.ui.resolve.BackToParentItem
 import com.yunx.app.ui.resolve.CrumbBar
-import com.yunx.app.ui.resolve.FileRowAction
 import com.yunx.app.ui.resolve.ShareFileRow
 import com.yunx.app.ui.viewmodel.GuangYaCloudUiState
 import com.yunx.app.ui.viewmodel.GuangYaCloudViewModel
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material.icons.outlined.Layers
+import com.yunx.app.ui.components.DirTreePanel
+import com.yunx.app.ui.resolve.FileRowAction
 
 /** 光鸭分享有效期档位（UI 中性码 → 展示文案），跨文件共用。 */
 private val guangYaExpireOptions = listOf(
@@ -128,8 +130,8 @@ fun GuangYaCloudScreen(
 
     // 列表切到哪个目录，左侧树就把那条路径逐级展开并滚到看得见
     LaunchedEffect(state) {
-        val s = state
-        if (s is GuangYaCloudUiState.Loaded) viewModel.dirTree.reveal(viewModel.currentPathFids)
+        val st = state
+        if (st is GuangYaCloudUiState.Loaded) viewModel.dirTree.reveal(viewModel.currentPathFids)
     }
 
     LaunchedEffect(viewModel.cloudMessage) {
@@ -146,6 +148,7 @@ fun GuangYaCloudScreen(
         }
     }
 
+
     Surface(
         modifier = modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.surface
@@ -153,7 +156,7 @@ fun GuangYaCloudScreen(
         AnimatedContent(
             targetState = state,
             transitionSpec = {
-                fadeIn(tween(200)) togetherWith fadeOut(tween(140))
+                Motion.fade(200, 140)
             },
             label = "guangyaCloudState"
         ) { s ->
@@ -194,9 +197,7 @@ fun GuangYaCloudScreen(
                                 selectedId = s.dirId,
                                 rootTitle = "光鸭云盘",
                                 onSelect = { row -> viewModel.openPath(row.pathIds, row.pathNames) },
-                                modifier = Modifier
-                                    .width(232.dp)
-                                    .fillMaxHeight()
+                                modifier = Modifier.width(232.dp).fillMaxHeight()
                             )
                             Box(
                                 modifier = Modifier
@@ -205,7 +206,7 @@ fun GuangYaCloudScreen(
                                     .background(MaterialTheme.colorScheme.outlineVariant)
                             )
                         }
-                        LazyColumn(
+                    LazyColumn(
                             state = listState,
                             modifier = Modifier
                                 .weight(1f)
@@ -314,7 +315,7 @@ fun GuangYaCloudScreen(
                             items(s.files, key = { it.fid }) { file ->
                                 ShareFileRow(
                                     file = file,
-                                    modifier = Modifier.animateItem(),
+                                    modifier = animateItemIfAllowed(),
                                     onClick = {
                                         if (viewModel.multiSelectMode) {
                                             viewModel.toggleSelect(file)
@@ -325,37 +326,57 @@ fun GuangYaCloudScreen(
                                             showActionSheet = true
                                         }
                                     },
-                                    // 行尾内联操作：三点菜单里的动作直接铺到行上，一点到位
-                                    // （多选模式收起，改由底部批量栏承担）
+
+                                    // 行尾内联操作：三点菜单里的动作直接铺到行上，一点到位（多选模式收起）
+
                                     actions = if (viewModel.multiSelectMode) emptyList() else buildList {
+
                                         add(FileRowAction(label = if (file.isdir) "下载文件夹" else "下载", icon = Icons.Outlined.Download) {
+
                                             viewModel.openActions(file)
+
                                             if (file.isdir) viewModel.downloadFolder() else viewModel.downloadFile()
+
                                             viewModel.dismissActions()
+
                                         })
+
                                         add(FileRowAction(label = "分享", icon = Icons.Outlined.Share) {
+
                                             viewModel.openActions(file)
+
                                             showShare = true
+
                                         })
+
                                         add(FileRowAction(label = "移动到", icon = Icons.Outlined.DriveFileMove) {
+
                                             viewModel.openActions(file)
+
                                             viewModel.openMoveRoot()
+
                                             showMove = true
+
                                         })
+
                                         add(FileRowAction(label = "重命名", icon = Icons.Outlined.Edit) {
+
                                             viewModel.openActions(file)
+
                                             showRename = true
+
                                         })
+
                                         add(FileRowAction(label = "删除", icon = Icons.Outlined.Delete, destructive = true) {
+
                                             viewModel.openActions(file)
+
                                             showDeleteConfirm = true
+
                                         })
+
                                     },
-                                    onLongClick = if (!viewModel.multiSelectMode) {
-                                        { viewModel.enterMultiSelect(file) }
-                                    } else {
-                                        null
-                                    },
+
                                     selected = viewModel.selected.contains(file),
                                     showCheckbox = viewModel.multiSelectMode
                                 )
@@ -447,6 +468,10 @@ fun GuangYaCloudScreen(
             onDelete = {
                 showActionSheet = false
                 showDeleteConfirm = true
+            },
+            onMultiSelect = {
+                showActionSheet = false
+                viewModel.actionFile?.let { viewModel.enterMultiSelect(it) }
             },
             onDismiss = {
                 showActionSheet = false
@@ -563,6 +588,7 @@ private fun GuangYaActionSheet(
     onMove: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
+    onMultiSelect: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -617,6 +643,9 @@ private fun GuangYaActionSheet(
             GuangYaActionItem(Icons.Outlined.Share, "分享", "生成分享链接（可设提取码/有效期）", MaterialTheme.colorScheme.primary, onShare)
             GuangYaActionItem(Icons.Outlined.DriveFileMove, "移动到", "移动到网盘的其他目录", MaterialTheme.colorScheme.primary, onMove)
             GuangYaActionItem(Icons.Outlined.Edit, "重命名", "修改文件名", MaterialTheme.colorScheme.primary, onRename)
+            if (onMultiSelect != null) {
+                GuangYaActionItem(Icons.Outlined.CheckCircle, "多选", "勾选多个项目批量下载 / 分享 / 移动 / 删除", MaterialTheme.colorScheme.primary, onMultiSelect)
+            }
             GuangYaActionItem(Icons.Outlined.Delete, "删除", "删除到回收站", MaterialTheme.colorScheme.error, onDelete)
         }
     }
@@ -724,7 +753,7 @@ private fun GuangYaMoveSheet(
             }
             AnimatedContent(
                 targetState = moveState,
-                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+                transitionSpec = { Motion.fade(180, 140) },
                 label = "guangyaMoveState"
             ) { s ->
                 when (s) {

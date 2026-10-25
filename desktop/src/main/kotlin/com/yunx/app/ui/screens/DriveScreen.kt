@@ -1,5 +1,6 @@
 package com.yunx.app.ui.screens
 
+import com.yunx.app.ui.theme.animateItemIfAllowed
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -63,9 +64,11 @@ import com.yunx.app.data.db.Pan115AccountEntity
 import com.yunx.app.data.db.Pan123AccountEntity
 import com.yunx.app.data.db.QuarkAccountEntity
 import com.yunx.app.data.db.UCAccountEntity
+import com.yunx.app.data.db.VideoAccountEntity
 import com.yunx.app.data.db.XunleiAccountEntity
 import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.model.QuotaInfo
+import com.yunx.app.data.network.video.VideoPlatform
 import com.yunx.app.ui.components.FadeAlertDialog
 import com.yunx.app.ui.viewmodel.BaiduCloudViewModel
 import com.yunx.app.ui.viewmodel.C139CloudViewModel
@@ -138,8 +141,6 @@ fun DriveScreen(
     onQuarkLogout: () -> Unit,
     /** 夸克云盘下载入队后切换到「下载」Tab */
     onDownloadStarted: () -> Unit = {},
-    /** 递增即「回到全部网盘」：侧栏再次点击网盘 Tab 或离开网盘 Tab 时由上层触发 */
-    homeSignal: Int = 0,
     onUCLogin: () -> Unit,
     onUCLogout: () -> Unit,
     onXunleiLogin: () -> Unit,
@@ -168,6 +169,14 @@ fun DriveScreen(
     onGitHubClearToken: () -> Unit = {},
     /** 多账号：账号列表 / 设主账号 / 改备注 / 退出单个账号 */
     multiAccount: MultiAccountViewModel,
+    /** 视频解析：各平台登录态（platform → 当前账号） */
+    videoLoginState: Map<VideoPlatform, VideoAccountEntity> = emptyMap(),
+    /** 视频解析：全部平台账号（用于统计「共 N 个账号」） */
+    videoAccounts: List<VideoAccountEntity> = emptyList(),
+    /** 视频平台：打开登录页 */
+    onVideoLogin: (VideoPlatform) -> Unit = {},
+    /** 视频平台：打开账号管理弹窗 */
+    onVideoManage: (VideoPlatform) -> Unit = {},
     /** 「添加账号」：传入平台常量，由 MainScreen 清网页登录态并打开该平台登录页 */
     onAddAccount: (String) -> Unit = {},
     /** 「四宫格（两列）/ 列表」布局：由 MainScreen 顶部栏右上角按钮切换 */
@@ -206,22 +215,6 @@ fun DriveScreen(
     var showILanzouCloud by rememberSaveable { mutableStateOf(false) }
     // 蓝奏云云盘浏览：网盘 Tab 内切换（非全屏）
     var showLanzouCloud by rememberSaveable { mutableStateOf(false) }
-    // 「回到全部网盘」：侧栏点网盘 Tab 时把 10 个浏览态一起复位。
-    // 浏览态是 rememberSaveable，不主动清的话切走再切回来还停在刚才那个网盘里。
-    LaunchedEffect(homeSignal) {
-        if (homeSignal > 0) {
-            showCloud = false
-            showUCCloud = false
-            showXunleiCloud = false
-            showBaiduCloud = false
-            showC139Cloud = false
-            showPan123Cloud = false
-            showPan115Cloud = false
-            showGuangYaCloud = false
-            showILanzouCloud = false
-            showLanzouCloud = false
-        }
-    }
 
     // 夸克：登录态由数据库驱动；已登录则副标题显示昵称
     val quark = DriveAccount(
@@ -571,7 +564,7 @@ fun DriveScreen(
                     )
                 }
                 items(others, key = { it.id }) { account ->
-                    DriveAccountCard(account = account, modifier = Modifier.animateItem())
+                    DriveAccountCard(account = account, modifier = animateItemIfAllowed())
                 }
                 item(key = github.id) {
                     // GitHub：已配置 Token 点击主体进入「我的主页」；未配置打开 Token 弹窗；更多按钮在登录后显示
@@ -579,6 +572,25 @@ fun DriveScreen(
                         account = github,
                         onClick = if (githubHasToken) onGitHubBrowseHome else onGitHubTokenClick,
                         onMoreClick = if (githubHasToken) { { showGitHubSheet = true } } else null
+                    )
+                }
+                // ---- 视频解析：各平台登录态与账号管理（与网盘区共用同一套卡片版式）----
+                item(key = "video_header", span = { GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        text = "视频解析",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp, start = 4.dp)
+                    )
+                }
+                item(key = "video_section", span = { GridItemSpan(maxLineSpan) }) {
+                    VideoAccountSection(
+                        loginState = videoLoginState,
+                        accounts = videoAccounts,
+                        // 跟随网盘卡片的列数：四宫格时视频平台也排两列，否则切换模式只有上面变了
+                        columns = if (gridMode) 2 else 1,
+                        onLogin = onVideoLogin,
+                        onManage = onVideoManage
                     )
                 }
             }
@@ -847,9 +859,9 @@ private fun DriveAccountCardContent(
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 品牌头像（暂用首字母，后续可替换为品牌图标）
+        // 品牌头像（暂用首字母，后续可替换为品牌图标）；尺寸与视频平台 Logo 对齐（#185：48→40dp）
         Surface(
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier.size(40.dp),
             shape = CircleShape,
             color = if (account.isLoggedIn) {
                 MaterialTheme.colorScheme.primaryContainer

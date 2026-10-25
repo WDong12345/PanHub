@@ -12,14 +12,15 @@ import kotlin.reflect.KClass
 import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.QuarkApi
+import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
-import com.yunx.app.ui.components.DirNode
-import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 
 /** 夸克云盘浏览 UI 状态 */
 sealed interface QuarkCloudUiState {
@@ -218,6 +219,7 @@ class QuarkCloudViewModel(
         load(pathIds.lastOrNull() ?: "0", pathNames)
     }
 
+
     // ---------- 文件操作 ----------
 
     /** 多选模式（长按进入） */
@@ -353,11 +355,24 @@ class QuarkCloudViewModel(
         }
     }
 
-    /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
-    fun downloadFile() = downloadFileTo("")
+    /** 待确认的下载直链（单文件下载弹窗展示用，长按链接可复制） */
+    var downloadLink by mutableStateOf<DownloadLink?>(null)
+        private set
+
+    /** 与 downloadLink 配套的入队参数（弹窗确认后直接入队） */
+    private var pendingDownload: PendingDownload? = null
+
+    /** 当前待确认下载的保存目录（空串 = 跟随全局设置）；下载弹窗展示用 */
+    var pendingSaveDir by mutableStateOf("")
+        private set
+
+    /** 下载文件：取直链 → 弹出下载确认弹窗（对齐解析页行为，确认后入队） */
+    fun downloadFile() = beginDownload("")
 
     /** 下载到指定目录：单次覆盖保存目录，不改「设置 → 储存目录」的全局设置 */
-    fun downloadFileTo(saveDir: String) {
+    fun downloadFileTo(saveDir: String) = beginDownload(saveDir)
+
+    private fun beginDownload(saveDir: String) {
         val file = actionFile ?: return
         viewModelScope.launch {
             isOperating = true
@@ -371,10 +386,10 @@ class QuarkCloudViewModel(
                     ?: throw IllegalStateException("获取下载链接失败")
                 // 直链原样使用（关闭 CDN 节点改写/探测，避免消耗直链额度与节点签名 412）
                 val effectiveUrl = com.yunx.app.data.network.QuarkCdn.fastest(link.downloadUrl, cookie)
-                val fileName = link.filename.ifBlank { file.fname }
+                pendingSaveDir = saveDir
                 downloadManager.enqueue(
                     url = effectiveUrl,
-                    fileName = fileName,
+                    fileName = link.filename.ifBlank { file.fname },
                     size = link.size,
                     platform = DownloadPlatform.QUARK,
                     saveDir = saveDir,
@@ -384,7 +399,7 @@ class QuarkCloudViewModel(
                         "Referer" to com.yunx.app.data.network.QuarkConstants.DOWNLOAD_REFERER
                     )
                 )
-                cloudMessage = "已加入下载：$fileName"
+                cloudMessage = "已加入下载"
                 actionFile = null
                 downloadTriggered++
             } catch (e: Exception) {
@@ -393,6 +408,41 @@ class QuarkCloudViewModel(
                 isOperating = false
             }
         }
+    }
+
+    /** 下载弹窗确认：用已生成的直链入队 */
+    fun startDownload() {
+        val pd = pendingDownload ?: return
+        downloadLink = null
+        pendingDownload = null
+        pendingSaveDir = ""
+        viewModelScope.launch {
+            isOperating = true
+            try {
+                downloadManager.enqueue(
+                    url = pd.url,
+                    fileName = pd.fileName,
+                    size = pd.size,
+                    platform = DownloadPlatform.QUARK,
+                    headers = pd.headers,
+                    saveDir = pd.saveDir
+                )
+                cloudMessage = "已加入下载：${pd.fileName}"
+                actionFile = null
+                downloadTriggered++
+            } catch (e: Exception) {
+                cloudMessage = e.message ?: "下载失败"
+            } finally {
+                isOperating = false
+            }
+        }
+    }
+
+    /** 关闭下载弹窗（放弃下载） */
+    fun dismissDownloadDialog() {
+        downloadLink = null
+        pendingDownload = null
+        pendingSaveDir = ""
     }
 
     /** 重命名 */
@@ -571,7 +621,8 @@ class QuarkCloudViewModel(
                             fileName = if (relPath.contains('/')) relPath else link.filename.ifBlank { relPath },
                             size = link.size,
                             platform = DownloadPlatform.QUARK,
-                            headers = downloadHeaders(cookie)
+                            headers = downloadHeaders(cookie),
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -688,7 +739,6 @@ class QuarkCloudViewModel(
 
     /** 下拉刷新当前目录（不切 Loading 遮罩，完成后更新列表） */
     fun refresh() {
-        dirTree.invalidate()
         val current = uiState.value
         if (current !is QuarkCloudUiState.Loaded) {
             loadRoot()
@@ -713,8 +763,6 @@ class QuarkCloudViewModel(
     }
 
     private fun reloadCurrent() {
-        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
-        dirTree.invalidate()
         val current = uiState.value
         if (current is QuarkCloudUiState.Loaded) {
             load(current.dirFid, current.pathNames)
@@ -750,7 +798,3 @@ class QuarkCloudViewModel(
             QuarkCloudViewModel(api, cookieProvider, downloadManager) as T
     }
 }
-
-/** 树懒加载子目录时的翻页尺寸与上限：上限只为兜住异常大的目录，正常几页内就靠「本页出现文件」早停 */
-private const val TREE_DIR_PAGE_SIZE = 50
-private const val TREE_DIR_MAX_PAGES = 20

@@ -13,15 +13,16 @@ import com.yunx.app.data.download.DownloadManager
 import com.yunx.app.data.download.DownloadPlatform
 import com.yunx.app.data.network.XunleiApi
 import com.yunx.app.data.network.XunleiConstants
+import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareExpire
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.network.model.ShareInfo
-import com.yunx.app.ui.components.DirNode
-import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 
 /** 迅雷云盘浏览 UI 状态 */
 sealed interface XunleiCloudUiState {
@@ -153,6 +154,7 @@ class XunleiCloudViewModel(
         pathNames.forEach { nameStack.addLast(it) }
         load(pathIds.lastOrNull() ?: "", pathNames)
     }
+
 
     // ---------- 多选 ----------
 
@@ -329,11 +331,25 @@ class XunleiCloudViewModel(
         }
     }
 
-    /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制 */
-    fun downloadFile() = downloadFileTo("")
+    /** 下载：文件详情取直链（签名 URL，无需 Cookie）→ 内置下载队列 */
+    /** 待确认的下载直链（单文件下载弹窗展示用，长按链接可复制） */
+    var downloadLink by mutableStateOf<DownloadLink?>(null)
+        private set
 
-    /** 下载到指定目录：单次覆盖保存目录，不改「设置 → 储存目录」的全局设置 */
-    fun downloadFileTo(saveDir: String) {
+    /** 与 downloadLink 配套的入队参数（弹窗确认后直接入队） */
+    private var pendingDownload: PendingDownload? = null
+
+    /** 当前待确认下载的保存目录（空串 = 跟随全局设置）；下载弹窗展示用 */
+    var pendingSaveDir by mutableStateOf("")
+        private set
+
+    /** 下载文件：取直链 → 弹出下载确认弹窗（对齐解析页行为，确认后入队） */
+    fun downloadFile() = beginDownload("")
+
+    /** 下载到指定目录：单次覆盖保存目录，不改全局设置 */
+    fun downloadFileTo(saveDir: String) = beginDownload(saveDir)
+
+    private fun beginDownload(saveDir: String) {
         val file = actionFile ?: return
         viewModelScope.launch {
             isOperating = true
@@ -341,16 +357,16 @@ class XunleiCloudViewModel(
                 val c = creds() ?: throw IllegalStateException("请先登录迅雷网盘")
                 val link = api.getFileDetail(file.fid, c.first, c.second, c.third)
                     ?: throw IllegalStateException("获取下载链接失败")
-                val fileName = link.filename.ifBlank { file.fname }
+                pendingSaveDir = saveDir
                 downloadManager.enqueue(
                     url = link.downloadUrl,
-                    fileName = fileName,
+                    fileName = link.filename.ifBlank { file.fname },
                     size = link.size,
                     platform = DownloadPlatform.XUNLEI,
                     saveDir = saveDir,
                     headers = mapOf("User-Agent" to XunleiConstants.APP_UA)
                 )
-                cloudMessage = "已加入下载：$fileName"
+                cloudMessage = "已加入下载"
                 actionFile = null
                 downloadTriggered++
             } catch (e: Exception) {
@@ -359,6 +375,41 @@ class XunleiCloudViewModel(
                 isOperating = false
             }
         }
+    }
+
+    /** 下载弹窗确认：用已生成的直链入队 */
+    fun startDownload() {
+        val pd = pendingDownload ?: return
+        downloadLink = null
+        pendingDownload = null
+        pendingSaveDir = ""
+        viewModelScope.launch {
+            isOperating = true
+            try {
+                downloadManager.enqueue(
+                    url = pd.url,
+                    fileName = pd.fileName,
+                    size = pd.size,
+                    platform = DownloadPlatform.XUNLEI,
+                    headers = pd.headers,
+                    saveDir = pd.saveDir
+                )
+                cloudMessage = "已加入下载：${pd.fileName}"
+                actionFile = null
+                downloadTriggered++
+            } catch (e: Exception) {
+                cloudMessage = e.message ?: "下载失败"
+            } finally {
+                isOperating = false
+            }
+        }
+    }
+
+    /** 关闭下载弹窗（放弃下载） */
+    fun dismissDownloadDialog() {
+        downloadLink = null
+        pendingDownload = null
+        pendingSaveDir = ""
     }
 
     /** 重命名 */
@@ -509,7 +560,8 @@ class XunleiCloudViewModel(
                             fileName = if (relPath.contains('/')) relPath else link.filename.ifBlank { relPath },
                             size = link.size,
                             platform = DownloadPlatform.XUNLEI,
-                            headers = downloadHeaders()
+                            headers = downloadHeaders(),
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -604,7 +656,6 @@ class XunleiCloudViewModel(
 
     /** 下拉刷新 */
     fun refresh() {
-        dirTree.invalidate()
         val current = uiState.value
         if (current !is XunleiCloudUiState.Loaded) {
             loadRoot()
@@ -629,8 +680,6 @@ class XunleiCloudViewModel(
     }
 
     private fun reloadCurrent() {
-        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
-        dirTree.invalidate()
         val current = uiState.value
         if (current is XunleiCloudUiState.Loaded) {
             load(current.dirFid, current.pathNames)

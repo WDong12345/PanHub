@@ -76,6 +76,18 @@ class XunleiAccountViewModel(
 
     fun beginAddAccount() { addNewAccount = true }
 
+    /** 当前是否是「添加账号」（网页登录页据此清掉旧登录态，避免静默登回旧账号） */
+    val isAddingAccount: Boolean get() = addNewAccount
+
+    /**
+     * 登录成功计数（每次落库成功 +1）：登录页据此自动关闭。
+     *
+     * ★ 不能用「账号非空」判断 —— 「添加账号」时旧账号本来就在，登录页一渲染就会被
+     *   误判成登录成功而立刻关闭（用户看到的就是「打开闪一下就关闭」）。
+     */
+    var loginSucceeded by androidx.compose.runtime.mutableStateOf(0)
+        private set
+
     fun cancelAddAccount() { addNewAccount = false }
 
     /** 账号密码登录 */
@@ -124,6 +136,7 @@ class XunleiAccountViewModel(
                     val ok = repository.finishLogin(step, username.trim(), newAccount = addNewAccount)
                     if (ok) {
                         addNewAccount = false
+                        loginSucceeded++
                     } else {
                         loginError = "登录失败，无法换取凭证"
                     }
@@ -192,6 +205,7 @@ class XunleiAccountViewModel(
             }
             if (ok) {
                 addNewAccount = false
+                loginSucceeded++
             } else {
                 loginError = "验证码校验失败"
             }
@@ -204,7 +218,10 @@ class XunleiAccountViewModel(
      */
     suspend fun saveWebCredential(raw: String): Boolean {
         val saved = repository.saveWebCredential(raw, newAccount = addNewAccount)
-        if (saved) addNewAccount = false
+        if (saved) {
+            addNewAccount = false
+            loginSucceeded++
+        }
         return saved
     }
 

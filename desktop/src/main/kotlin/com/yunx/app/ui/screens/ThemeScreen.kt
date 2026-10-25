@@ -1,6 +1,7 @@
 package com.yunx.app.ui.screens
 
 import com.yunx.app.ui.BackHandler
+import com.yunx.app.ui.theme.MotionPolicy
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
@@ -337,6 +338,39 @@ fun ThemeScreen(
         }
 
             Spacer(modifier = Modifier.height(16.dp))
+
+            // ---------- 动效 ----------
+            SectionLabel("动效")
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("减少动画", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = if (MotionPolicy.softwareRendering) {
+                                // 软件渲染下开关无效（判定取「或」），说明清楚免得用户以为坏了
+                                "当前为软件渲染，动画已自动关闭"
+                            } else {
+                                "关闭页面切换位移与列表增删动画，适合晕动症或低配设备"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = MotionPolicy.userReducedMotion || MotionPolicy.softwareRendering,
+                        enabled = !MotionPolicy.softwareRendering,
+                        onCheckedChange = { MotionPolicy.updateUserReducedMotion(it) }
+                    )
+                }
+            }
         }
     }
 

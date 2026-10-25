@@ -254,7 +254,7 @@ class LanzouApi(
 
     /**
      * 只列子目录（取 [listCloudFiles] 已用到的 task=47，服务端一次返回该层全部目录）。
-     * 左侧目录树懒加载专用：[listCloudFiles] 还要按 task=5 翻最多 MAX_FILE_PAGES 页取文件，
+     * 网盘左侧目录树懒加载专用：[listCloudFiles] 还要按 task=5 翻最多 MAX_FILE_PAGES 页取文件，
      * 展开一个树节点不该付这个代价。
      */
     suspend fun listFolders(cookie: String, uid: String, vei: String, folderId: String): List<ShareFile> =

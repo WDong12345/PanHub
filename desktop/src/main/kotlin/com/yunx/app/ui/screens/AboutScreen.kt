@@ -106,10 +106,10 @@ fun AboutScreen(
             InfoCard(
                 icon = Icons.Outlined.Cloud,
                 title = "应用简介",
-                description = "云析（YunX）是一款网盘分享链接解析与高速下载工具。" +
-                    "粘贴分享链接，登录网盘账号后即可浏览分享内容并直接高速下载文件。\n" +
+                description = "云析（YunX）是一款网盘分享链接 + 视频链接解析与高速下载工具。" +
+                    "粘贴分享链接或视频短链，登录账号后即可浏览内容、在线预览并直接高速下载。\n" +
                     "Windows 桌面端：YunX-Desktop 基于 Compose Multiplatform 构建，" +
-                    "是云析的官方电脑版，提供与安卓版一致的解析与下载体验。"
+                    "在安卓版能力之上补齐桌面交互（右键菜单、文件夹整夹下载、可拖动窗口）。"
             )
             
 
@@ -187,7 +187,7 @@ private fun AppHeader(versionName: String) {
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "网盘链接解析与高速下载",
+            text = "网盘与视频链接解析 · 高速下载",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.outline
         )
@@ -219,7 +219,7 @@ private fun InfoCard(icon: ImageVector, title: String, description: String) {
     }
 }
 
-/** 支持平台卡片 */
+/** 支持平台卡片（网盘 + 视频解析） */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PlatformCard() {
@@ -235,6 +235,7 @@ private fun PlatformCard() {
         "蓝奏云" to Icons.Outlined.Cloud,
         "蓝奏云优享版" to Icons.Outlined.Cloud
     )
+    val videoPlatforms = listOf("哔哩哔哩", "小红书", "抖音", "微博", "快手", "AcFun", "Pixiv")
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             CardIcon(Icons.Outlined.Storage)
@@ -275,6 +276,42 @@ private fun PlatformCard() {
                 }
             }
         }
+        Spacer(modifier = Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CardIcon(Icons.Outlined.Forum)
+            Spacer(modifier = Modifier.width(14.dp))
+            Column {
+                Text(
+                    text = "视频解析",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "短链 / 口令 / 整段文案粘贴即解析，可选清晰度与图集",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            videoPlatforms.forEach { name ->
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.tertiaryContainer
+                ) {
+                    Text(
+                        text = name,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -282,10 +319,14 @@ private fun PlatformCard() {
 @Composable
 private fun FeatureCard() {
     val features = listOf(
-        "一键解析分享链接" to "夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版 分享直链识别",
-        "高速分片下载" to "多线程并发 + 断点续传，充分利用带宽",
-        "取链即删" to "转存后立即清理，不留残留",
-        "凭证本地化" to "Cookie 加密落库，仅存本机"
+        "网盘分享解析" to "夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版 分享直链识别",
+        "视频链接解析" to "哔哩哔哩 / 小红书 / 抖音 / 微博 / 快手 / AcFun / Pixiv；短链、口令、整段文案均可",
+        "高速分片下载" to "多线程并发 + 断点续传 + 慢连接自动换线；B 站高清分轨两轨并行后自动合轨",
+        "在线预览" to "ffplay 直读直链、真·边下边播（HLS 原生支持）；没装 FFmpeg 时回退内置播放器并可一键下载",
+        "Live 图" to "微博 / 抖音动图可存为动态照片、静态图片或视频",
+        "多账号与备份" to "网盘与视频平台均支持多账号（主账号 / 备注），认证信息可加密导出 / 导入",
+        "引擎管理" to "FFmpeg（预览 / 合轨）与 Gopeed 内核集中下载·更新·卸载，装到应用私有目录，不改系统环境变量",
+        "凭证本地化" to "Cookie / Token 加密落库，仅存本机"
     )
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -328,7 +369,7 @@ private fun FeatureCard() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TechCard() {
-    val techs = listOf("Kotlin", "Jetpack Compose", "Material 3", "Room", "OkHttp", "KSP")
+    val techs = listOf("Kotlin", "Compose Multiplatform", "Material 3", "SQLite", "OkHttp", "FFmpeg", "JavaFX Media", "JCEF")
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             CardIcon(Icons.Outlined.Code)

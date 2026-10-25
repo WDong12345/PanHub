@@ -22,7 +22,7 @@ Write-Host "[OK] App version: $AppVersion" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "[1/5] Gradle: build jar + native darkmode.dll + export runtime libs..." -ForegroundColor Cyan
-$buildOut = Invoke-Gradle ":desktop:jar" ":desktop:compileDarkMode" ":desktop:exportRuntimeLibs" "--no-build-cache" "--console=plain" 2>&1 | Out-String
+$buildOut = Invoke-Gradle ":desktop:jar" ":desktop:compileDarkMode" ":desktop:exportRuntimeLibs" ":desktop:exportJcefNatives" "--no-build-cache" "--console=plain" 2>&1 | Out-String
 Write-Host $buildOut
 if ($buildOut -match "BUILD FAILED|FAILURE:") { throw "gradle export failed" }
 
@@ -152,62 +152,23 @@ if ($skikoRuntimeJar) {
     throw "skiko-awt-runtime-windows-x64 jar not found in $libs"
 }
 
-# ---- [2c/5] 裁剪 JCEF 语言包（只留 zh-CN）----
-# JCEF 原生包是 jar 内嵌的一个 tar.gz。应用界面与内置浏览器 UI 固定简体中文
-# （JcefHolder 显式设置 CefSettings.locale = "zh-CN"），其余语言包不会被加载。
-# libcef.dll / jcef_helper.exe / icudtl.dat / swiftshader/ / resources.pak /
-# chrome_*.pak 等一律不动。
+# ---- [2c/5] CEF 原生库：jar 内嵌 tar.gz → tar.xz（体积从 120MB 降到约 90MB）----
+# CEF 原生库是包里最大的一块（解包后 261MB，官方 jar 内 gzip 后 120MB）。
+# 这里用 JcefNativesPacker 把它重压成 LZMA2（同一批文件，内容一个不少），
+# 顺带把语言包裁到只剩 zh-CN（应用固定 settings.locale = "zh-CN"）。
+# 运行期由 JcefNativesInstaller 首次使用时解开，再让 jcefmaven 跳过它自己的安装步骤。
 Write-Host ""
-Write-Host "[2c/5] Trimming JCEF locale packs..." -ForegroundColor Cyan
-$jcefJar = Get-ChildItem $libs -Filter "jcef-natives-windows-amd64-*.jar" | Select-Object -First 1 -ExpandProperty FullName
-if (-not $jcefJar) { throw "jcef natives jar not found in $libs" }
-$jcefBefore = Get-JarSizeMb $jcefJar
-$jcefWork = Join-Path $root "build\jcef-trim"
-if (Test-Path $jcefWork) { Remove-Item $jcefWork -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $jcefWork | Out-Null
-# 1) 从 jar 中取出内嵌 tar.gz
-$zj = [System.IO.Compression.ZipFile]::OpenRead($jcefJar)
-$tarEntry = $zj.Entries | Where-Object { $_.FullName.EndsWith(".tar.gz") } | Select-Object -First 1
-if (-not $tarEntry) { $zj.Dispose(); throw "embedded tar.gz not found in $jcefJar" }
-$tarName = $tarEntry.FullName
-$tarOrig = Join-Path $jcefWork "natives.tar.gz"
-[System.IO.Compression.ZipFileExtensions]::ExtractToFile($tarEntry, $tarOrig, $true)
-$zj.Dispose()
-# 2) 解包 → 删除多余 locale → 重新打包（bsdtar，Windows 10+ 自带）
-$jcefExtract = Join-Path $jcefWork "natives"
-New-Item -ItemType Directory -Force -Path $jcefExtract | Out-Null
-& tar -xzf $tarOrig -C $jcefExtract
-if ($LASTEXITCODE -ne 0) { throw "tar extract failed ($LASTEXITCODE)" }
-$keepLocales = @("zh-CN")
-$localeDir = Join-Path $jcefExtract "locales"
-$removedLocales = 0
-Get-ChildItem $localeDir -Filter *.pak | Where-Object { $keepLocales -notcontains $_.BaseName } | ForEach-Object {
-    Remove-Item $_.FullName -Force
-    $removedLocales++
-}
-$tarNew = Join-Path $jcefWork "natives-trimmed.tar.gz"
-& tar -czf $tarNew -C $jcefExtract .
-if ($LASTEXITCODE -ne 0) { throw "tar repack failed ($LASTEXITCODE)" }
-# 3) 用精简后的 tar.gz 替换 jar 内原条目（其余条目原样复制）
-$tmpJcef = "$jcefJar.tmp"
-if (Test-Path $tmpJcef) { Remove-Item $tmpJcef -Force }
-$inJar = [System.IO.Compression.ZipFile]::OpenRead($jcefJar)
-$ofs = [System.IO.File]::Create($tmpJcef)
-$outJar = New-Object System.IO.Compression.ZipArchive($ofs, [System.IO.Compression.ZipArchiveMode]::Create)
-foreach ($e in $inJar.Entries) {
-    $ne = $outJar.CreateEntry($e.FullName, [System.IO.Compression.CompressionLevel]::Optimal)
-    $os = $ne.Open()
-    if ($e.FullName -eq $tarName) {
-        $ns = [System.IO.File]::OpenRead($tarNew); $ns.CopyTo($os); $ns.Close()
-    } else {
-        $es = $e.Open(); $es.CopyTo($os); $es.Close()
-    }
-    $os.Close()
-}
-$outJar.Dispose(); $ofs.Dispose(); $inJar.Dispose()
-Move-Item $tmpJcef $jcefJar -Force
-Remove-Item $jcefWork -Recurse -Force -ErrorAction SilentlyContinue
-Write-Host "  jcef natives: $jcefBefore MB -> $(Get-JarSizeMb $jcefJar) MB (dropped $removedLocales locale packs)" -ForegroundColor Green
+Write-Host "[2c/5] Repacking CEF natives (tar.gz -> tar.xz)..." -ForegroundColor Cyan
+$jcefNativesJar = Get-ChildItem (Join-Path $root "desktop\build\jcefNatives") -Filter "jcef-natives-*.jar" -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+if (-not $jcefNativesJar) { throw "jcef natives jar not found in desktop\build\jcefNatives" }
+$jcefNativesMb = Get-JarSizeMb $jcefNativesJar
+$jcefArchive = Join-Path $libs "jcef-natives.tar.xz"
+$javaExe = Join-Path $JDK "bin\java.exe"
+$packOut = & $javaExe -Xmx1g -cp "$libs\*" com.yunx.app.tools.JcefNativesPacker $jcefNativesJar $jcefArchive 2>&1 | Out-String
+Write-Host $packOut.Trim()
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $jcefArchive)) { throw "jcef natives repack failed" }
+Write-Host "  jcef natives: $jcefNativesMb MB (jar) -> $([math]::Round((Get-Item $jcefArchive).Length / 1MB, 2)) MB (tar.xz, zh-CN only)" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "[3/5] Building JRE runtime image (jlink)..." -ForegroundColor Cyan
@@ -218,9 +179,20 @@ if (Test-Path $runtimeTmp) { Remove-Item $runtimeTmp -Recurse -Force }
 $jlinkExe = Join-Path $JDK "bin\jlink.exe"
 # --compress=2：对 runtime/lib/modules 做 zip 级别压缩（JDK 17 支持；JDK 21+ 才有的 zip-6 不可用）
 & $jlinkExe --module-path (Join-Path $JDK "jmods") `
-  --add-modules java.base,java.datatransfer,java.xml,java.prefs,java.desktop,java.logging,jdk.crypto.ec,java.sql,java.naming `
+  --add-modules java.base,java.datatransfer,java.xml,java.prefs,java.desktop,java.logging,jdk.crypto.ec,java.sql,java.naming,jdk.httpserver,jdk.unsupported.desktop `
   --strip-debug --no-header-files --no-man-pages --compress=2 --output $runtimeTmp
 if ($LASTEXITCODE -ne 0) { throw "jlink failed with exit $LASTEXITCODE" }
+# jlink 会带两样运行时用不到的东西：
+# - lib\jvm.lib：只在编译期链接 JVM 用，运行期加载的是 bin\server\jvm.dll；
+# - bin\splashscreen.dll：jpackage 默认启动器的启动闪屏用，本项目用自研启动器自绘闪屏。
+foreach ($unused in @("lib\jvm.lib", "bin\splashscreen.dll")) {
+    $p = Join-Path $runtimeTmp $unused
+    if (Test-Path $p) {
+        $mb = [math]::Round((Get-Item $p).Length / 1MB, 2)
+        Remove-Item $p -Force
+        Write-Host "  dropped runtime\$unused (-$mb MB)" -ForegroundColor Green
+    }
+}
 
 Write-Host ""
 Write-Host "[4/5] Creating app-image with jpackage (YunX-Desktop.exe)..." -ForegroundColor Cyan

@@ -62,18 +62,25 @@ object RemoteImageLoader {
     var mirrorPrefix: String? = null
 
     /** 取已缓存的图（没有则 null）：调用方用它做首帧直出，避免闪一下占位色 */
-    fun cached(url: String): ImageBitmap? = synchronized(cacheLock) { cache[url.trim()] }
+    fun cached(url: String, headers: Map<String, String> = emptyMap()): ImageBitmap? =
+        synchronized(cacheLock) { cache[cacheKey(url, headers)] }
 
-    /** 加载远程图片；失败（网络 / 非 2xx / 不是图片 / 不支持 svg）返回 null，不抛异常 */
-    suspend fun load(url: String): ImageBitmap? {
+    /**
+     * 加载远程图片；失败（网络 / 非 2xx / 不是图片 / 不支持 svg）返回 null，不抛异常。
+     *
+     * [headers] 用于视频平台的图集直链：微博 / 小红书的图片 CDN 会校验 Referer，
+     * 不带请求头会直接 403。空表 = 与以前完全一致（也走原来的缓存键）。
+     */
+    suspend fun load(url: String, headers: Map<String, String> = emptyMap()): ImageBitmap? {
         val link = url.trim()
         if (link.isEmpty()) return null
-        cached(link)?.let { return it }
-        val deferred = inFlight.computeIfAbsent(link) { key ->
-            loaderScope.async { fetchAndDecode(key) }
+        val key = cacheKey(link, headers)
+        cached(link, headers)?.let { return it }
+        val deferred = inFlight.computeIfAbsent(key) { k ->
+            loaderScope.async { fetchAndDecode(k, link, headers) }
         }
         // 加载结束（无论成功失败）后移除进行中标记，避免 map 无限增长
-        deferred.invokeOnCompletion { inFlight.remove(link, deferred) }
+        deferred.invokeOnCompletion { inFlight.remove(key, deferred) }
         return try {
             deferred.await()
         } catch (e: CancellationException) {
@@ -82,9 +89,18 @@ object RemoteImageLoader {
         }
     }
 
+    /** 带请求头的缓存键：无头时就是 URL 本身，保证既有缓存行为不变 */
+    private fun cacheKey(url: String, headers: Map<String, String>): String =
+        if (headers.isEmpty()) url else
+            url + "|" + headers.entries.sortedBy { it.key }.joinToString("&") { "${it.key}=${it.value}" }
+
     /** 拉取 + 解码；镜像候选失败自动回退直连，全部失败返回 null（调用方显示占位） */
-    private suspend fun fetchAndDecode(url: String): ImageBitmap? = withContext(Dispatchers.IO) {
-        cached(url)?.let { return@withContext it }
+    private suspend fun fetchAndDecode(
+        key: String,
+        url: String,
+        headers: Map<String, String> = emptyMap()
+    ): ImageBitmap? = withContext(Dispatchers.IO) {
+        cached(url, headers)?.let { return@withContext it }
         // SVG（图床图标 / 徽章）Skia 位图解码不支持，提前跳过省一次网络请求；
         // 带 query 的 svg（如 badge.svg?raw=1）必须先去 query/fragment 再取后缀，否则会误取成 "raw=1"
         val ext = url.substringBefore('?').substringBefore('#').substringAfterLast('.').lowercase()
@@ -101,7 +117,9 @@ object RemoteImageLoader {
                 semaphore.withPermit {
                     val req = Request.Builder()
                         .url(candidate)
+                        // 先铺默认 UA，再用调用方给的头覆盖（视频图集需要 Referer/UA/Cookie）
                         .header("User-Agent", "YunX-Desktop")
+                        .apply { headers.forEach { (k, v) -> header(k, v) } }
                         .build()
                     client.newCall(req).execute().use { resp ->
                         if (!resp.isSuccessful) return@withPermit null
@@ -114,7 +132,7 @@ object RemoteImageLoader {
                     org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
                 }.getOrNull()
                 if (bitmap != null) {
-                    synchronized(cacheLock) { cache[url] = bitmap }
+                    synchronized(cacheLock) { cache[key] = bitmap }
                     return@withContext bitmap
                 }
             }

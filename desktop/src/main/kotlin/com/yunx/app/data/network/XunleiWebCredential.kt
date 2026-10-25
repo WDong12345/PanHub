@@ -64,12 +64,129 @@ object XunleiWebCredential {
     const val DESKTOP_SEC_CH_UA_MOBILE = "?0"
     const val DESKTOP_SEC_CH_UA_PLATFORM = "\"Windows\""
 
+    // ---------- 网页版 captcha 签名（本地现签，不依赖隐藏浏览器） ----------
+
+    /**
+     * 网页版 captcha 签名参数：本地算 captcha_sign → 直接换 token。
+     *
+     * ⚠️ 与 App 通道**不是一套**：网页端 client_version 会被强制更新、9 条盐随 bundle 轮换
+     * （约 20 天一次）。签名一旦被服务端拒绝，就只能回退网页会话
+     * （见 `XunleiAccountRepository.refreshWebSession`）。替换时版本与盐必须整组更新，盐顺序敏感。
+     */
+    const val WEB_CLIENT_VERSION = "1.93.10"
+    const val WEB_PACKAGE_NAME = "pan.xunlei.com"
+    private const val WEB_SIGN_HOST = "pan.xunlei.com"
+    private const val WEB_ALG_VERSION = "1"
+
+    /** 9 条盐，顺序敏感（来自网页版 public-key 链） */
+    private val WEB_CAPTCHA_SALTS = listOf(
+        "DVM8BRQfJWDsIE0JbH5GCUM0z0jU1yGymBTj4Eyloazv1F+w0G7ig",
+        "T",
+        "a1fUxfjOO1/dW++DpGupRgw9P93L",
+        "aktKbp+/lQc3MvlMHIupt65LjAgJOL6ttMFvTKK+7+WKubSf9rT",
+        "SB/ne9FQUnQmWz4Wuv9KqKfGOBOCUubpHpECxOHfD4hNoMclYA2Yq",
+        "sOZFBQ8IMFy3OFjAIf/eA65iqFvS9TIKzLyrhiT6",
+        "ZhJdLgL7MGh2GanboB0yk",
+        "Osf",
+        "v"
+    )
+
+    /** 网页 captcha_token 的保守有效期：服务端 expires_in=300s，页面本身再提前 30s 视为过期 */
+    const val WEB_CAPTCHA_TOKEN_TTL_MS = 270_000L
+
+    /**
+     * 网页版 captcha_sign：`raw = client_id + version + host + device_id + timestamp_ms`
+     * → 9 层 `md5(raw + salt)`，前缀 `1.`。
+     *
+     * 与 App 通道的区别：App 是 10 层、raw 里放 package_name；网页是 9 层、raw 里放 host。
+     * 用 App 签名去换网页 token 会被服务端判 `client_id not match`（就是「验证码无效」的根因）。
+     */
+    fun computeCaptchaSign(deviceId: String, timestampMs: Long): String {
+        var h = CLIENT_ID + WEB_CLIENT_VERSION + WEB_SIGN_HOST + deviceId + timestampMs
+        WEB_CAPTCHA_SALTS.forEach { salt -> h = md5Hex(h + salt) }
+        return "$WEB_ALG_VERSION.$h"
+    }
+
+    private const val HEX = "0123456789abcdef"
+
+    private fun md5Hex(text: String): String {
+        val digest = java.security.MessageDigest.getInstance("MD5").digest(text.toByteArray(Charsets.UTF_8))
+        val out = StringBuilder(digest.size * 2)
+        digest.forEach { b ->
+            out.append(HEX[(b.toInt() shr 4) and 0x0f]).append(HEX[b.toInt() and 0x0f])
+        }
+        return out.toString()
+    }
+
+    /**
+     * 网页会话保活的就绪判据（无头 JCEF 用，见 [com.yunx.app.data.network.video.HeadlessWebView]）：
+     * 页面加载完成，且网页自己已经把 `captcha_<clientId>` 刷新成有效 token。
+     *
+     * 为什么不能只看 `readyState`：页面刚加载完时 localStorage 里可能还是**已过期**的旧 token，
+     * 它的 JS 要再发一次 captcha/init 才会更新。这里直接等有效 token，等到即取。
+     */
+    val REFRESH_READY_JS: String = """
+        (function(){try{
+          if(document.readyState!=='complete')return false;
+          var c=JSON.parse(localStorage.getItem('$CAPTCHA_KEY')||'{}');
+          return !!(c&&c.token&&Date.parse(c.expires_at)>Date.now());
+        }catch(e){return false}})()
+    """.trimIndent()
+
+    /**
+     * 从网页会话里取凭据的脚本（返回 `encodeURIComponent(JSON)` 字符串，空串=还没登录）。
+     *
+     * 与 [COOKIE_BRIDGE_SCRIPT] 的区别：那条是给「有界面登录窗」用的（JCEF 拿不到 JS 返回值，
+     * 只能写 Cookie 再读）；无头会话可以直接把字符串回传（走 cefQuery）。
+     */
+    val READ_SCRIPT: String = """
+        (function(){try{
+          var prefix='$STORAGE_KEY';
+          var sub=localStorage.getItem('current_sub');
+          var raw=sub?localStorage.getItem(prefix+'@'+sub):localStorage.getItem(prefix);
+          if(!raw)return '';
+          var data=JSON.parse(raw);
+          if(!data||typeof data!=='object'||Array.isArray(data))return '';
+          if(sub&&data.sub&&String(data.sub)!==sub)return '';
+          try{
+            var c=JSON.parse(localStorage.getItem('$CAPTCHA_KEY')||'{}');
+            if(c&&c.token&&Date.parse(c.expires_at)>Date.now())data.captcha_token=c.token;
+          }catch(e){}
+          try{
+            var all=document.cookie.split(';');
+            for(var i=0;i<all.length;i++){
+              var s=all[i].trim();
+              if(s.indexOf('deviceid=')!==0)continue;
+              var d=decodeURIComponent(s.slice(9));
+              data.device_id=(d.indexOf('.')>-1&&d.length>32)?d.split('.')[1].slice(0,32):d;
+              break;
+            }
+          }catch(e){}
+          return encodeURIComponent(JSON.stringify(data));
+        }catch(e){return ''}})()
+    """.trimIndent()
+
     /** 允许 WebView 停留 / 跳转的域名（登录过程会经 i.xunlei.com 等官方域，统一放行 *.xunlei.com） */
     private val TRUSTED_HOSTS = listOf("xunlei.com")
 
     /** JCEF 桥接：把网页凭据写进 Cookie 的分片键前缀 / 分片数键（单条 Cookie 有 4KB 上限） */
     const val CRED_COOKIE_PREFIX = "yunx_xl_cred_"
     const val CRED_COOKIE_COUNT = "yunx_xl_cred_n"
+
+    /**
+     * 「添加账号」时清掉**网页自己**保存的登录态（localStorage）。
+     *
+     * ★ 只清 Cookie 是不够的：pan.xunlei.com 把 `credentials_<clientId>`（含 refresh_token）写在
+     *   localStorage 里，页面一加载就会用它把旧账号静默登回来 —— 用户看到的正是「添加账号后
+     *   登录页一闪就关 / 加进来的还是原来那个」。所以新账号登录前必须把这份凭据一起删掉。
+     */
+    val CLEAR_SESSION_SCRIPT: String = """
+        (function(){try{
+          localStorage.removeItem('$STORAGE_KEY');
+          localStorage.removeItem('$CAPTCHA_KEY');
+          localStorage.removeItem('current_sub');
+        }catch(e){}})()
+    """.trimIndent()
 
     /**
      * 桌面 JCEF 不支持取 executeJavaScript 的返回值，所以改为「把凭据写进 Cookie，再从 Cookie 读回」：

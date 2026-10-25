@@ -36,6 +36,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
+import com.yunx.app.ui.theme.Motion
+import com.yunx.app.ui.theme.MotionPolicy
 
 /**
  * 全局弹窗覆盖层注册表：FadeAlertDialog 把内容注册到这里，
@@ -104,10 +106,23 @@ fun FadeAlertDialog(
                 withFrameNanos { }
                 composed = true
                 alpha.snapTo(0f)
-                alpha.animateTo(1f, animationSpec = tween(durationMillis = 170, easing = LinearOutSlowInEasing))
+                // 「减少动画」/ 软件渲染：时长为 0，弹窗直接出现（§3.7）
+                alpha.animateTo(
+                    1f,
+                    animationSpec = tween(
+                        durationMillis = Motion.duration(170),
+                        easing = LinearOutSlowInEasing
+                    )
+                )
             }
             !visible && composed -> {
-                alpha.animateTo(0f, animationSpec = tween(durationMillis = 140, easing = FastOutLinearInEasing))
+                alpha.animateTo(
+                    0f,
+                    animationSpec = tween(
+                        durationMillis = Motion.duration(140),
+                        easing = FastOutLinearInEasing
+                    )
+                )
                 composed = false
             }
         }
@@ -178,7 +193,8 @@ private fun DialogSurface(
             tonalElevation = 6.dp,
             modifier = Modifier
                 .graphicsLayer {
-                    val s = 0.95f + 0.05f * alpha.value
+                    // 降级时不缩放，只做透明度过渡
+                    val s = if (MotionPolicy.reducedMotion) 1f else 0.95f + 0.05f * alpha.value
                     scaleX = s
                     scaleY = s
                 }

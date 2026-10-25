@@ -12,6 +12,7 @@ import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import kotlinx.coroutines.launch
 import com.yunx.app.data.network.XunleiDeviceFingerprint
+import com.yunx.app.data.network.video.HeadlessWebView
 import com.yunx.app.ui.MainScreen
 import com.yunx.app.ui.clipboard.ClipboardLinkController
 import com.yunx.app.ui.jcef.JcefHolder
@@ -19,6 +20,7 @@ import com.yunx.app.ui.theme.ComposeEmptyActivityTheme
 import com.yunx.app.util.DarkMode
 import com.yunx.app.util.DesktopActions
 import com.yunx.app.util.RenderApiChooser
+import com.yunx.app.util.SingleInstance
 import com.yunx.app.util.TrayManager
 import com.yunx.app.util.Win32PopupMenu
 import com.yunx.app.util.WindowFx
@@ -34,15 +36,29 @@ fun main(args: Array<String>) {
     // 桌面上下文初始化（数据目录等）
     AppContext.init()
 
+    // 单实例：第二个实例只把已有窗口还原到前台，然后自身退出。
+    // ★ 必须做：两个实例共用同一数据目录时，CEF 的用户数据目录（cache\jcef）会撞车 ——
+    //   Chromium 是单例进程模型，第二个实例抢不到 profile 锁会走它自己的「已有实例」处理，
+    //   实测会把第一个实例的渲染 / 网络子进程杀掉（jcef.log：Tab Killed / Network service crashed），
+    //   个别机器上还会被 Chromium 反向拉起系统里注册的浏览器。
+    if (!SingleInstance.acquire()) {
+        SingleInstance.focusExistingWindow()
+        return
+    }
+
     // ★ 老旧 / 基础显示适配器（如 ATI Radeon 3000）上，OPENGL(ANGLE) 会出现「界面有形状、
     //   但一个文字都不渲染」，这类设备由 [RenderApiChooser] 自动退到 SOFTWARE。
     //   必须在创建任何窗口 / Skiko 初始化之前设置；环境变量 YUNXPC_RENDER_API 优先级更高。
+    var softwareRendering = false
     if (osName.contains("win")) {
         val renderApi = System.getenv("YUNXPC_RENDER_API")?.takeIf { it.isNotBlank() }
             ?: RenderApiChooser.chooseWindows()
         com.yunx.app.util.Log.i("YunX-Render", "渲染后端：$renderApi")
         System.setProperty("skiko.renderApi", renderApi)
+        softwareRendering = renderApi.equals("SOFTWARE", true)
     }
+    // 动效降级：软件渲染时每帧 CPU 光栅化，位移动画/列表增删只会更卡（§3.7）
+    runCatching { com.yunx.app.ui.theme.MotionPolicy.install(softwareRendering) }
     // 诊断日志：读开关（默认关）并定好落盘目录；开着才起写线程，关着这里几乎零开销
     runCatching { com.yunx.app.util.DiagnosticLog.install() }
     // 下载调试：读开关（默认关）。必须在任何下载开始之前装配，否则开关打开后先建的任务收不到事件
@@ -119,22 +135,32 @@ fun main(args: Array<String>) {
         // 把可见性回滚，导致窗口永远不显示（进程存活但无窗口）。
         val splashMode = System.getenv("YUNXPC_SPLASH") == "1"
 
+        // 窗口状态提升为可共享状态：视频预览的全屏开关（PreviewFullscreen）需要它
+        val windowState = remember { WindowState(size = DpSize(1100.dp, 760.dp)) }
+
         Window(
             onCloseRequest = {
                 if (!suppressCloseRequest) closeRequested = true
             },
             title = "云析 YunX-Desktop",
-            state = WindowState(size = DpSize(1100.dp, 760.dp)),
+            state = windowState,
             icon = remember { loadWindowIcon() },
         ) {
             androidx.compose.runtime.SideEffect {
                 mainWindow = window as? java.awt.Frame
+                com.yunx.app.ui.components.PreviewFullscreen.windowState = windowState
+                // 退出全屏时恢复窗口矩形要用真实窗口（只靠 WindowState 不可靠）
+                com.yunx.app.ui.components.PreviewFullscreen.window = window
                 // 剪贴板分享链接弹窗：主窗口引用用于「主窗口失焦时才弹」判断 + 「打开」时切回前台
                 ClipboardLinkController.mainWindow = mainWindow
             }
             // 窗口出现后再后台启动 JCEF，登录页通过 browserReady 状态自动切换
             androidx.compose.runtime.LaunchedEffect(Unit) {
                 JcefHolder.initInBackground()
+                // 预热抖音解析用的隐藏浏览器：实测单次解析耗时几乎全在 Chromium
+                // 冷启动与 acrawler 挑战上（诊断日志 1.8~9.4s），提前把浏览器与站点
+                // Cookie 热起来，用户真正粘贴链接时即可省掉这段冷启动。
+                HeadlessWebView.prewarm("https://www.douyin.com/")
             }
             // 启动淡入：窗口 displayable 后压 0 → 等内容就绪 → 渐入
             androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -212,7 +238,7 @@ private fun loadWindowIcon(): androidx.compose.ui.graphics.painter.Painter? = ru
  */
 private fun runJcefSmoke(url: String) {
     println("SMOKE: init JCEF...")
-    JcefHolder.initBlocking(noSandbox = true)
+    JcefHolder.initBlocking()
     val app = JcefHolder.app()
     if (app == null) {
         println("SMOKE: JCEF init FAILED")

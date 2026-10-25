@@ -1,10 +1,7 @@
 package com.yunx.app.ui.screens
 
+import com.yunx.app.ui.theme.Motion
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -139,7 +136,7 @@ fun GuangYaSaveSheet(
             // 目录切换：淡入过渡（与网盘移动弹窗一致）
             AnimatedContent(
                 targetState = cloudState,
-                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+                transitionSpec = { Motion.fade(180, 140) },
                 label = "guangyaSaveState"
             ) { s ->
                 when (s) {

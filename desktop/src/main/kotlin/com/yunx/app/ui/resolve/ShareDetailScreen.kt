@@ -1,9 +1,10 @@
 package com.yunx.app.ui.resolve
 
+import com.yunx.app.ui.theme.animateItemIfAllowed
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.basicMarquee
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.SaveAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -56,9 +58,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -91,6 +96,7 @@ import com.yunx.app.ui.viewmodel.QuarkCloudViewModel
 import com.yunx.app.ui.viewmodel.ResolveViewModel
 import com.yunx.app.ui.viewmodel.UCCoudViewModel
 import com.yunx.app.ui.viewmodel.XunleiCloudViewModel
+import androidx.compose.ui.graphics.vector.ImageVector
 
 /** 百度非会员限速阈值：>300MB 提示 */
 private const val BAIDU_LIMIT_BYTES = 300L * 1024 * 1024
@@ -251,8 +257,7 @@ fun ShareDetailScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         GuestBrowseNotice(viewModel.sharePlatform)
                     }
-                    // 下载时同时保存到网盘（仅夸克：只有它能用转存返回的新 fid 继续下载；
-                    // 其余平台的「保存」仍走行尾转存按钮，避免勾了却只存不下）
+                    // 下载时同时保存到网盘（仅夸克：只有它能用转存返回的新 fid 继续下载）
                     if (!viewModel.multiSelectMode && viewModel.sharePlatform == SharePlatform.QUARK && !viewModel.isGuest) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Row(
@@ -302,7 +307,7 @@ fun ShareDetailScreen(
             items(files, key = { it.fid }) { file ->
                 ShareFileRow(
                     file = file,
-                    modifier = Modifier.animateItem(),
+                    modifier = animateItemIfAllowed(),
                     onClick = {
                         if (viewModel.multiSelectMode) {
                             viewModel.toggleSelect(file)
@@ -318,7 +323,7 @@ fun ShareDetailScreen(
                     } else {
                         null
                     },
-                    onLongClick = if (!viewModel.multiSelectMode) {
+                    onContextMenu = if (!viewModel.multiSelectMode) {
                         { viewModel.enterMultiSelect(file) }
                     } else {
                         null
@@ -669,10 +674,6 @@ internal fun CrumbBar(
     }
 }
 
-/**
- * 文件行尾的内联操作按钮描述。
- * [label] 同时作为按钮的无障碍描述（悬停/读屏可见），[destructive] 用错误色渲染（如删除）。
- */
 internal data class FileRowAction(
     val label: String,
     val icon: ImageVector,
@@ -680,33 +681,41 @@ internal data class FileRowAction(
     val onClick: () -> Unit
 )
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun ShareFileRow(
     file: ShareFile,
     onClick: () -> Unit,
     /** 非空时行尾显示「转存」按钮 */
     onSave: (() -> Unit)? = null,
+    /** 非空时行尾显示「更多」按钮（打开文件操作菜单） */
+    onMore: (() -> Unit)? = null,
+    /** 右键 / 长按 / 更多菜单（打开该行的操作菜单；多选模式下为 null） */
+    onContextMenu: (() -> Unit)? = null,
     /** 行尾内联操作按钮（下载/分享/移动/重命名/删除），点击直达对应动作 */
     actions: List<FileRowAction> = emptyList(),
-    /** 长按进入多选（多选模式下为 null） */
-    onLongClick: (() -> Unit)? = null,
     /** 多选模式：是否选中 */
     selected: Boolean = false,
     /** 是否显示行首复选框（仅多选模式列表传 true；移动/转存等选择器不显示） */
     showCheckbox: Boolean = false,
     /** 文件徽章（文件名旁；GitHub Releases 最新/预发布/草稿、账号 repo Fork/语言） */
     badge: @Composable (() -> Unit)? = null,
-    /** 列表项动画等（调用方传入 Modifier.animateItem()） */
+    /** 列表项动画等（调用方传入 Modifier.animateItemIfAllowed()） */
     modifier: Modifier = Modifier
 ) {
+    // 打开操作菜单：右键、行尾「⋯」、左键长按三个入口，行为一致
+    val openMenu: (() -> Unit)? = (onContextMenu ?: onMore)
     Card(
         modifier = modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = onLongClick
-            ),
+                // 桌面端常见习惯是右键，但手机式「长按」也保留，两边都能打开菜单
+                onLongClick = openMenu
+            )
+            .onPointerEvent(PointerEventType.Press) { event ->
+                if (event.buttons.isSecondaryPressed) openMenu?.invoke()
+            },
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
             containerColor = if (selected) {
@@ -807,6 +816,16 @@ internal fun ShareFileRow(
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.outline
                 )
+            }
+            if (onMore != null) {
+                IconButton(onClick = onMore, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreVert,
+                        contentDescription = "更多",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

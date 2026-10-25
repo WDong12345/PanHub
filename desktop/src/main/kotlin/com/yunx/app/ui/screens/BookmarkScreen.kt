@@ -1,6 +1,7 @@
 package com.yunx.app.ui.screens
 
 import com.yunx.app.ui.BackHandler
+import com.yunx.app.ui.theme.animateItemIfAllowed
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -152,7 +153,7 @@ fun BookmarkScreen(
                 items(filtered, key = { it.id }) { bookmark ->
                     BookmarkRow(
                         bookmark = bookmark,
-                        modifier = Modifier.animateItem(),
+                        modifier = animateItemIfAllowed(),
                         onClick = { onResolve(bookmark.link, bookmark.pwd) },
                         onLongClick = { menuBookmark = bookmark }
                     )

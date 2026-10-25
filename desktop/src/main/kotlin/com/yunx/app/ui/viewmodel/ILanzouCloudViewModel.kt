@@ -16,8 +16,6 @@ import com.yunx.app.data.network.ILanzouConstants
 import com.yunx.app.data.network.model.DownloadLink
 import com.yunx.app.data.network.model.ShareFile
 import com.yunx.app.data.repository.ILanzouAccountRepository
-import com.yunx.app.ui.components.DirNode
-import com.yunx.app.ui.components.DirTreeState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +23,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import com.yunx.app.ui.components.DirNode
+import com.yunx.app.ui.components.DirTreeState
 
 /** 蓝奏优享云盘浏览 UI 状态（根目录 dirId = "0"）。 */
 sealed interface ILanzouCloudUiState {
@@ -74,6 +74,15 @@ class ILanzouCloudViewModel(
         private set
     private val _selected = mutableStateListOf<ShareFile>()
     val selected: List<ShareFile> get() = _selected
+
+    /** 待确认的下载直链（单文件下载弹窗展示用） */
+    var downloadLink by mutableStateOf<DownloadLink?>(null)
+        private set
+    private var pendingDownload: PendingDownload? = null
+
+    /** 当前待确认下载的保存目录（空串 = 跟随全局设置）；下载弹窗展示用 */
+    var pendingSaveDir by mutableStateOf("")
+        private set
 
     private val dirStack = ArrayDeque<String>()
     private val nameStack = ArrayDeque<String>()
@@ -167,6 +176,7 @@ class ILanzouCloudViewModel(
         pathNames.forEach { nameStack.addLast(it) }
         load(pathIds.lastOrNull() ?: ILanzouConstants.ROOT_FOLDER_ID, pathNames)
     }
+
 
     // ---------- 多选 ----------
 
@@ -336,27 +346,29 @@ class ILanzouCloudViewModel(
         }
     }
 
-    /** 下载文件：取直链后直接入队并切到下载页；直链仍可在下载页右键复制。 */
-    fun downloadFile() = downloadFileTo("")
+    /** 下载文件：取直链 → 弹下载确认弹窗（确认后入队）。 */
+    fun downloadFile() = beginDownload("")
 
-    /** 下载到指定目录：单次覆盖保存目录，不改「设置 → 储存目录」的全局设置 */
-    fun downloadFileTo(saveDir: String) {
+    /** 下载到指定目录：单次覆盖保存目录，不改全局设置 */
+    fun downloadFileTo(saveDir: String) = beginDownload(saveDir)
+
+    private fun beginDownload(saveDir: String) {
         val file = actionFile ?: return
         viewModelScope.launch {
             isOperating = true
             try {
                 val link = fetchLink(credential(), file)
                     ?: throw IllegalStateException("获取下载链接失败")
-                val fileName = file.fname.ifBlank { link.filename }
+                pendingSaveDir = saveDir
                 downloadManager.enqueue(
                     url = link.downloadUrl,
-                    fileName = fileName,
+                    fileName = file.fname.ifBlank { link.filename },
                     size = link.size,
                     platform = DownloadPlatform.ILANZOU,
                     saveDir = saveDir,
                     headers = downloadHeaders()
                 )
-                cloudMessage = "已加入下载：$fileName"
+                cloudMessage = "已加入下载"
                 actionFile = null
                 downloadTriggered++
             } catch (e: Exception) {
@@ -365,6 +377,41 @@ class ILanzouCloudViewModel(
                 isOperating = false
             }
         }
+    }
+
+    /** 下载弹窗确认：用已生成的直链入队。 */
+    fun startDownload() {
+        val pd = pendingDownload ?: return
+        downloadLink = null
+        pendingDownload = null
+        pendingSaveDir = ""
+        viewModelScope.launch {
+            isOperating = true
+            try {
+                downloadManager.enqueue(
+                    url = pd.url,
+                    fileName = pd.fileName,
+                    size = pd.size,
+                    platform = DownloadPlatform.ILANZOU,
+                    headers = pd.headers,
+                    saveDir = pd.saveDir
+                )
+                cloudMessage = "已加入下载：${pd.fileName}"
+                actionFile = null
+                downloadTriggered++
+            } catch (e: Exception) {
+                cloudMessage = e.message ?: "下载失败"
+            } finally {
+                isOperating = false
+            }
+        }
+    }
+
+    /** 关闭下载弹窗（放弃下载）。 */
+    fun dismissDownloadDialog() {
+        downloadLink = null
+        pendingDownload = null
+        pendingSaveDir = ""
     }
 
     /** 重命名（文件夹 / 文件分别走不同接口）。 */
@@ -492,7 +539,8 @@ class ILanzouCloudViewModel(
                             fileName = if (relPath.contains('/')) relPath else file.fname.ifBlank { link.filename },
                             size = link.size,
                             platform = DownloadPlatform.ILANZOU,
-                            headers = downloadHeaders()
+                            headers = downloadHeaders(),
+                            saveDir = saveDir
                         )
                         okCount++
                     }
@@ -562,7 +610,6 @@ class ILanzouCloudViewModel(
 
     /** 下拉刷新。 */
     fun refresh() {
-        dirTree.invalidate()
         val current = uiState.value
         if (current !is ILanzouCloudUiState.Loaded) {
             loadRoot()
@@ -583,8 +630,6 @@ class ILanzouCloudViewModel(
     }
 
     private fun reloadCurrent() {
-        // 增删改移之后目录树必须跟着重取，否则树上还挂着已删的目录、也看不见新建的
-        dirTree.invalidate()
         val current = uiState.value
         if (current is ILanzouCloudUiState.Loaded) {
             load(current.dirId, current.pathNames)
