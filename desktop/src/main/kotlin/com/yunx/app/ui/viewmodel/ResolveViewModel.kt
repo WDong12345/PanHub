@@ -2082,7 +2082,8 @@ class ResolveViewModel(
             size = link.size,
             platform = platform,
             altSources = altSources,
-            saveDir = saveDir
+            saveDir = saveDir,
+            cleanupId = link.cleanupDirFid.orEmpty()
         ) {
             // 下载完成（通过 onComplete 回调）：清理网盘临时转存目录；失败/取消不触发
             val dirFid = link.cleanupDirFid

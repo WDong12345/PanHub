@@ -521,9 +521,12 @@ private class FfplayPreviewController(
             }
             return
         }
-        val deadline = System.currentTimeMillis() + EMBED_TIMEOUT_MS
-        while (System.currentTimeMillis() < deadline) {
-            if (disposed || process !== p) return
+        val startedAt = System.currentTimeMillis()
+        var hinted = false
+        // 4K 直链要先建连接、探测流，ffplay 的窗口可能十几秒后才出现。
+        // 不能一到 5s 就放弃嵌入：放弃后窗口留在了屏幕外，用户看到的就是
+        // 「有声音、预览窗口黑屏、任务栏多一个 ffplay 图标」。
+        while (!disposed && process === p) {
             val child = FfplayWindowFx.findWindowForProcess(p.pid())
             val parent = FfplayManager.hostWindowHandle(PreviewFullscreen.window)
             val b = bounds
@@ -533,16 +536,39 @@ private class FfplayPreviewController(
                 if (disposed || process !== p) return
                 embedded = ok
                 frozenFrame = null // 新窗口已就位，撤掉「最后一帧」遮罩
-                if (!ok) {
+                if (ok) {
+                    if (statusText.isNotEmpty()) statusText = ""
+                    Log.d(
+                        FFPLAY_TAG,
+                        "embed: 成功 hwnd=$child pid=${p.pid()} 等待 ${System.currentTimeMillis() - startedAt}ms"
+                    )
+                } else {
                     // 窗口是创建在屏幕外的，嵌入失败必须搬回可见区
                     FfplayWindowFx.revealWindow(child)
                     statusText = "FFplay 已在独立窗口播放（无法嵌入应用窗口）"
                 }
                 return
             }
+            val waited = System.currentTimeMillis() - startedAt
+            if (!hinted && waited >= EMBED_TIMEOUT_MS) {
+                hinted = true
+                if (child == null) statusText = "正在等待播放窗口…"
+                Log.d(FFPLAY_TAG, "embed: 已等待 ${EMBED_TIMEOUT_MS}ms 仍未拿到可嵌入的窗口 pid=${p.pid()}")
+            }
+            // 等了很久还没窗口：先按「独立窗口」提示（不再转圈），但**继续在后台等**。
+            // 4K 直链偶发几十秒后才建窗，只要窗口一出现就会被嵌入，不必让用户重开预览。
+            if (embedded == null && waited >= EMBED_GIVE_UP_MS) {
+                embedded = false
+                frozenFrame = null
+                statusText = "FFplay 窗口出现较慢，仍在后台等待嵌入…"
+                Log.w(FFPLAY_TAG, "embed: 超过 ${EMBED_GIVE_UP_MS}ms 仍无窗口（继续重试）pid=${p.pid()}")
+            }
+            // 进程已退出且始终没有窗口就没必要继续等了
+            if (!p.isAlive && child == null) break
             delay(60)
         }
         if (disposed || process !== p) return
+        if (embedded == true) return
         embedded = false
         frozenFrame = null
         // 一直没等到可用的宿主/尺寸：窗口可能已经出现在屏幕外，搬回可见区
@@ -624,6 +650,9 @@ private class FfplayPreviewController(
         )
 
         const val EMBED_TIMEOUT_MS = 5000L
+
+        /** 嵌入等待上限：大文件/慢直链下 ffplay 建窗很慢，最多等这么久才降级为独立窗口 */
+        const val EMBED_GIVE_UP_MS = 45_000L
         const val VK_P = 0x50
         const val VK_M = 0x4D
     }

@@ -35,7 +35,29 @@ cd YunX-Desktop
 根目录 `version.txt` 是**唯一版本来源**：jpackage 版本、便携包 / 安装包的文件名与程序版本、
 应用内「关于页 / 更新检测」全部由它派生。**发版只需改这一个文件。**
 
+```
+1.3.1            ← 第一行：版本号（必填）
+Beta=0           ← 第二行：Beta=1 预览版 / Beta=0 正式版（缺省 = 正式版）
+```
+
+第二行写 `Beta=1` 时，构建出的 `APP_IS_PREVIEW = true`，关于页版本号旁会显示**黄色 Beta 标记**。
+打包脚本只取第一行作为版本号，第二行不参与文件名 / jpackage 版本。
+
 启动器 exe 的版本资源（公司 `tidain`、版权 `Copyright (C) 2026 tidain`）也在打包时由该版本号生成。
+
+### 发布说明里的强制更新字段
+
+`Releases.md`（GitHub Release 正文）开头可以写两个字段，客户端据此决定是否**强制更新**：
+
+```
+> 强制更新：1
+> 最低强制更新版本：v1.3.0
+```
+
+- 只有 `强制更新 = 1` **且** 当前版本 ≥ 最低强制更新版本 **且** 当前版本 < 新版本 时才强制；
+  例如新版本 v1.3.1、最低强制 v1.3.0 时，1.2.9 不会被拦，1.3.0 会被拦。
+- 两个字段缺任意一个 / 为空 / 解析不出来 → 一律**不强制**（老用户不会被锁死）。
+- 强制更新时更新弹窗不可关闭、没有「稍后 / 不再提示该版本」，且不受用户之前「不再提示该版本」的影响。
 
 ## 打包产物
 
@@ -46,7 +68,7 @@ cd YunX-Desktop
 
 打包脚本会自动结束正在运行的程序实例，并在输出目录被占用时重试删除。
 
-便携包约 210MB（其中运行期 JRE 约 40MB、CEF 原生库压缩包约 88MB），体积主要来自 Chromium。
+便携包约 230MB（其中运行期 JRE 约 40MB、CEF 原生库压缩包约 110MB），体积主要来自 Chromium。
 
 ## 发布包体积裁剪
 
@@ -57,15 +79,15 @@ cd YunX-Desktop
 | `material-icons-extended` | 扫描所有 class 的常量池，只保留实际被引用的图标类 | 0.2 MB（完整包 36 MB） |
 | `sqlite-jdbc` | 只保留 `org/sqlite/native/Windows/x86_64` 原生库 | 2.37 → 0.75 MB |
 | `skiko-awt-runtime-windows-x64` | 从 `app\` 载荷里去掉 jar（原生库仍解到 `app\` 供加载） | −10.3 MB |
-| **CEF 原生库** | jar 内嵌 `tar.gz` 重压成 `tar.xz`（LZMA2 + BCJ），语言包只留 `zh-CN` | 131 → 88 MB |
+| **CEF 原生库** | jar 内嵌 `tar.gz` 重打成 `tar.gz`（gzip），语言包只留 `zh-CN` | 131 → 110 MB |
 | `runtime\lib\jvm.lib` / `runtime\bin\splashscreen.dll` | 运行时用不到（链接期文件 / jpackage 默认启动器闪屏），jlink 后删除 | −1.2 MB |
 
-### CEF 原生库重压（tar.xz）
+### CEF 原生库重打（tar.gz）
 
 发布包**不再**随带 `jcef-natives-*.jar`（解包后 261MB，gzip 后 120MB），而是：
 
 1. 打包时 `:desktop:exportJcefNatives` 单独导出原生 jar（`exportRuntimeLibs` 会排除它），
-   由 `JcefNativesPacker` 重压成 `app\jcef-natives.tar.xz`；
+   由 `JcefNativesPacker` 重打成 `app\jcef-natives.tar.gz`（沿用 gzip，不做 xz/LZMA2 —— 实测 xz 对内嵌浏览器不友好）；
 2. 运行期首次需要内嵌浏览器时，`JcefNativesInstaller` 把它解到 `<缓存>\jcef-bundle`，
    写 `install.lock` 与就绪标记（记录压缩包大小 / 时间，换包自动重解）；
 3. 随后 `CefAppBuilder.setSkipInstallation(true)`，jcefmaven 不再去找 classpath 里的原生 jar。

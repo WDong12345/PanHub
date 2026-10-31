@@ -70,7 +70,14 @@ data class DownloadStats(
      */
     val mergePercent: Int = -1,
     /** 实验性多线程直写：当前处于“提交前逐片校验”阶段（复用 [mergePercent] 表示百分比） */
-    val verifying: Boolean = false
+    val verifying: Boolean = false,
+    /**
+     * P2P（BT 磁力 / 种子 / ed2k）专属的连接概览，-1 = 不适用或未知（HTTP 任务恒为 -1）。
+     * 只在引擎同步循环里对 P2P 任务填充，UI 据此显示「种子 N · 连接 M」这类信息。
+     */
+    val seeds: Int = -1,       // 已连接的做种者数（BT 有，ed2k 无）
+    val peers: Int = -1,       // 当前活跃 peer 连接数
+    val totalPeers: Int = -1   // 已知 peer 总数
 )
 
 private const val TAG = "YunX-DL"
@@ -128,6 +135,15 @@ private const val RANGE_WORKERS_CAP = 8
 
 /** DASH 分轨多连接下载：单个 Range 分块的最小字节数（太小的轨切块没有收益） */
 private const val DASH_CHUNK_MIN = 2L * 1024 * 1024
+
+/**
+ * DASH 分轨的并发上限（视频轨 / 音轨各自）。
+ *
+ * 与 [RANGE_WORKERS_CAP] 分开：那条 8 的上限是为网盘 CDN 的 Range 阈值设置的；
+ * 视频 CDN（B 站）没有这个问题，反而是「单连接限速」—— 实测 PCDN 节点单连接只有几十 KB/s，
+ * 8 路合计只有几百 KB/s。这里放宽到 32（仍尊重用户按平台的线程数设置）。
+ */
+private const val DASH_WORKERS_CAP = 32
 
 /** DASH 分轨最多切成多少块（只防极端超大文件把队列撑爆） */
 private const val DASH_MAX_CHUNKS = 1024
@@ -714,6 +730,11 @@ class DownloadManager(
          * 单文件多源分片（实验性 C2）的备选源（同一文件其他账号的直链 + 各自请求头）。
          * 空 = 单源，行为与未开启该功能时完全一致；只对内置分片下载器生效，Gopeed 引擎任务忽略它。
          */
+        /**
+         * 云端临时目录 ID（夸克「转存取链」建的 tr_* 子目录）：进程重启后清理遗留目录时，
+         * 靠这一列判断哪些临时目录仍被未完成的任务占用。
+         */
+        cleanupId: String = "",
         altSources: List<DownloadSource> = emptyList(),
         /** 本任务单独的保存目录（绝对路径）；空串 = 跟随「设置 → 储存目录」的全局下载目录。
          *  单次下载「下载到…」用它，避免为一两个文件反复改全局设置。 */
@@ -730,18 +751,21 @@ class DownloadManager(
         mergeAudioHeaders: Map<String, String> = emptyMap(),
         /** 动图资源地址（Motion Photo 合成用）；空串 = 普通静图，见 [motionPhotoDownload] */
         motionUrl: String = "",
+        /** 本任务的下载线程数覆盖（浏览器插件按用户弹窗选择传入）；0 = 跟随平台的线程数设置 */
+        threads: Int = 0,
         /** 下载成功完成后的清理回调（如删除网盘临时转存文件）；失败/取消不触发。
          * 注意：必须是最后一个参数（调用点有大量尾随 lambda 用法，放它之后会编译失败）。 */
         onComplete: suspend () -> Unit = {}
     ): Long {
-        // 磁力链接只能交给 Gopeed 引擎（见 magnetBlockReason）；平台标识同时落库，便于事后区分
-        val isMagnet = MagnetLink.isMagnet(url)
-        val taskPlatform = if (isMagnet) DownloadPlatform.MAGNET else platform
+        // P2P 资源（磁力 / ed2k / 本地 .torrent 种子文件）只能交给 Gopeed 引擎（见 p2pBlockReason）；
+        // 平台标识同时落库，便于事后区分（ed2k 单列，磁力与种子文件同记 MAGNET）
+        val isP2P = P2PLink.matches(url)
+        val taskPlatform = if (isP2P) P2PLink.platformFor(url) else platform
         // 文件名兜底：空白时从 URL 推导，避免保存时变成时间戳。
-        // 磁力链接走 dn= 里自带的显示名（元数据到手后再换成真正的种子名，见 completeEngineTask）
+        // P2P 走链接/种子文件自带的显示名（元数据到手后再换成真正的资源名，见 completeEngineTask）
         val safeName = fileName.ifBlank {
-            if (isMagnet) {
-                MagnetLink.displayName(url)
+            if (isP2P) {
+                P2PLink.displayName(url).ifBlank { "P2P_${System.currentTimeMillis()}" }
             } else {
                 url.substringAfterLast('/').substringBefore('?')
                     .ifBlank { "download_${System.currentTimeMillis()}" }
@@ -760,6 +784,7 @@ class DownloadManager(
                         altSourcesJson = encodeAltSources(altSources),
                         platform = taskPlatform,
                         shareUrl = effectiveShareUrl,
+                        cleanupId = cleanupId,
                         saveDir = saveDir.trim(),
                         mergeAudioUrl = mergeAudioUrl.trim(),
                         // 音轨头里同样有 Cookie：与 requestHeadersJson 一样加密落库（空表存空串）
@@ -768,7 +793,8 @@ class DownloadManager(
                         } else {
                             encodeHeaders(mergeAudioHeaders, "download.mergeAudioHeaders")
                         },
-                        motionUrl = motionUrl.trim()
+                        motionUrl = motionUrl.trim(),
+                        threads = threads.coerceAtLeast(0)
                     )
                 )
             }
@@ -801,11 +827,12 @@ class DownloadManager(
         if (size > 0) taskSizes[id] = size
         if (fallbackUrl.isNotBlank()) taskFallbackUrls[id] = fallbackUrl
         taskCallbacks[id] = onComplete
-        // 磁力但引擎不可用：立刻落一条**带原因的失败任务**并结束。若照常走内置下载器，
-        // 它会把 magnet: 当普通 URL 发 HTTP 请求，最后抛一个和「该去导入内核」毫无关系的协议错误。
-        val blocked = magnetBlockReason(isMagnet)
+        // P2P（磁力 / ed2k / BT 种子文件）但引擎不可用：立刻落一条**带原因的失败任务**并结束。
+        // 若照常走内置下载器，它会把 magnet: 当普通 URL 发 HTTP 请求，最后抛一个和「该去导入内核」
+        // 毫无关系的协议错误。
+        val blocked = p2pBlockReason(isP2P)
         if (blocked != null) {
-            Log.w(TAG, "磁力任务被拦下：id=$id 原因=$blocked")
+            Log.w(TAG, "P2P 任务被拦下：id=$id 原因=$blocked")
             DownloadDebugLog.record(id, "拦截失败", blocked)
             taskCallbacks.remove(id)
             // 不会有下载协程来消费这几份内存数据了，直接清掉
@@ -831,18 +858,19 @@ class DownloadManager(
     }
 
     /**
-     * 磁力链接是否可下：返回 null = 可以（交给引擎），否则是给用户看的拦截原因。
+     * P2P 资源（磁力 / ed2k / BT 种子文件）是否可下：返回 null = 可以（交给引擎），否则是给用户看的拦截原因。
      *
-     * 磁力（BT）只有 Gopeed 内核里有实现（内核注册了 hls/http/bt/ed2k 四个协议），内置分片下载器
-     * 是纯 HTTP Range 实现，喂它 magnet: 只会得到没意义的报错 —— 所以这里宁可拦住并说清楚要做什么。
+     * 这几类协议只有 Gopeed 内核里有实现（内核注册了 hls/http/bt/ed2k 四个协议），内置分片下载器
+     * 是纯 HTTP Range 实现，喂它 magnet:/ed2k:/本地种子路径只会得到没意义的报错 —— 所以这里宁可
+     * 拦住并说清楚要做什么。
      */
-    private fun magnetBlockReason(isMagnet: Boolean): String? {
-        if (!isMagnet) return null
+    private fun p2pBlockReason(isP2P: Boolean): String? {
+        if (!isP2P) return null
         if (!GopeedEngine.isInstalled()) {
-            return "磁力下载需要先在「设置 → 下载 → 下载引擎」里导入 Gopeed 内核"
+            return "磁力 / ed2k / BT 种子下载需要先在「设置 → 下载 → 下载引擎」里导入 Gopeed 内核"
         }
         if (!engineEnabledProvider()) {
-            return "磁力下载需要先在「设置 → 下载 → 下载引擎」里把下载引擎切换为 Gopeed"
+            return "磁力 / ed2k / BT 种子下载需要先在「设置 → 下载 → 下载引擎」里把下载引擎切换为 Gopeed"
         }
         return null
     }
@@ -850,13 +878,14 @@ class DownloadManager(
     /**
      * 重新下载：用原直链新建任务（任务卡右键菜单「重新下载」）。
      * 先做 Range 探测校验直链有效性：403/404/网络错误视为直链已过期，返回 false 由 UI 提示。
-     * 磁力链接跳过探测——getTotalSize 是 HTTP Range 探测，喂它 magnet: 必然失败，
-     * 会让「重新下载」永远提示直链失效；磁力直接重新入队，引擎不可用时由 enqueue 的拦截说明原因。
+     * P2P 资源（磁力 / ed2k / 本地种子文件）跳过探测——getTotalSize 是 HTTP Range 探测，喂它
+     * magnet:/ed2k: 必然失败，会让「重新下载」永远提示直链失效；直接重新入队，引擎不可用时由
+     * enqueue 的拦截说明原因。
      */
     suspend fun redownload(id: Long): Boolean {
         val task = dao.get(id) ?: return false
         val headers = loadPersistedHeaders(id)
-        if (!MagnetLink.isMagnet(task.url)) {
+        if (!P2PLink.matches(task.url)) {
             val valid = runCatching { downloader.getTotalSize(task.url, headers) != null }.getOrDefault(false)
             if (!valid) return false
         }
@@ -871,6 +900,7 @@ class DownloadManager(
         enqueue(
             task.url, task.fileName, headers, task.totalSize, task.platform,
             saveDir = task.saveDir,
+            cleanupId = task.cleanupId,
             // DASH 合轨 / 动态照片任务的「重新下载」也必须带上另外几路资源，否则只会下到半截内容
             mergeAudioUrl = task.mergeAudioUrl,
             mergeAudioHeaders = loadPersistedMergeAudioHeaders(task.mergeAudioHeadersJson),
@@ -916,7 +946,16 @@ class DownloadManager(
                             loadPersistedHeaders(id)
                         }
                         if (restoredHeaders.isNotEmpty()) taskHeaders[id] = restoredHeaders
-                        runTaskWithRetry(id, restoredHeaders)
+                        // ★ 执行器路由：内置分片下载器只认 http/https，喂它 ed2k:// / magnet: 必然抛
+                        //   OkHttp 的 "Expected URL scheme 'http' or 'https' but was 'ed2k'"。
+                        //   engineTaskIds 是内存态（进程重启 / 引擎任务结束后会丢），所以这里必须回查
+                        //   DB 里持久化的 engineTaskId 与任务 URL：P2P（磁力 / ed2k / 种子）一律回引擎。
+                        val task = dao.get(id)
+                        if (task != null && (P2PLink.matches(task.url) || task.engineTaskId.isNotBlank())) {
+                            dispatchEngineResume(task, restoredHeaders)
+                        } else {
+                            runTaskWithRetry(id, restoredHeaders)
+                        }
                     }
                 } catch (e: CancellationException) {
                     // 主动暂停/删除：part 文件保留（或由 remove 清理）；状态已由调用方设置
@@ -1157,6 +1196,10 @@ class DownloadManager(
     private fun effectiveSaveDir(task: DownloadTaskEntity): String? =
         task.saveDir.takeIf { it.isNotBlank() } ?: saveDirProvider()
 
+    /** 任务实际使用的分片线程数：任务级覆盖优先（浏览器插件弹窗选择），0 = 跟随平台设置 */
+    private fun threadsFor(task: DownloadTaskEntity): Int =
+        if (task.threads > 0) task.threads else threadProvider(task.platform)
+
     /** 新建引擎任务（enqueue 的引擎分流入口） */
     private suspend fun startViaEngine(
         id: Long,
@@ -1178,9 +1221,14 @@ class DownloadManager(
         // 用户自选目录可能尚未创建；引擎不会替我们建，先建好
         runCatching { destDir.mkdirs() }
         val name = safe?.fileName ?: fileName
-        // 磁力（BT）在引擎解析出元数据前没有名字：交给引擎自己命名（真实种子名稍后写回本地记录）；
-        // 连接数是 http 协议的分片并发参数，BT 不吃
-        val isMagnet = platform == DownloadPlatform.MAGNET
+        // BT（磁力 / .torrent）与 ed2k 是两套不同的 P2P 协议，请求体形状也不一样：
+        // - BT：解析出元数据前没有名字（交给引擎自己命名），且必须下发 tracker 列表找 peer；
+        //       连接数是 http 协议的分片并发参数，BT 不吃。
+        // - ed2k：**链接里已自带文件名**，照常下发 name；它**不认 BT tracker** ——
+        //       把 BT tracker 当 req.extra.trackers 下发给 ed2k 任务会让引擎建任务/执行直接失败
+        //       （曾导致「ed2k 之前能下、现在失败」的回归）。
+        val isBt = platform == DownloadPlatform.MAGNET
+        val isP2P = isBt || platform == DownloadPlatform.ED2K
         val engineId = try {
             withContext(Dispatchers.IO) {
                 GopeedEngine.start(base)
@@ -1193,11 +1241,18 @@ class DownloadManager(
                 GopeedEngine.createTask(
                     url = url,
                     saveDir = destDir.absolutePath,
-                    fileName = if (isMagnet) "" else name,
+                    // 只有 BT 在元数据到手前没有名字；ed2k 用链接自带的文件名
+                    fileName = if (isBt) "" else name,
                     headers = headers,
-                    // 分片并发沿用按平台的线程数设置（映射到引擎的 extra.connections）
-                    connections = if (isMagnet) 0 else threadProvider(platform),
-                    label = id.toString()
+                    // 分片并发沿用按平台的线程数设置（映射到引擎的 extra.connections）；BT/ed2k 不吃
+                    connections = if (isP2P) 0 else threadProvider(platform),
+                    label = id.toString(),
+                    // 仅 BT 下发 tracker 列表（与全局 customTrackers 双保险）；ed2k 不下发
+                    trackers = if (isBt) {
+                        com.yunx.app.data.prefs.SettingsRepository().resolvedBtTrackers()
+                    } else {
+                        emptyList()
+                    }
                 )
             }
         } catch (e: Exception) {
@@ -1218,7 +1273,7 @@ class DownloadManager(
             summary = "engineId=$engineId platform=$platform name=$name"
         )
         Log.i(TAG, "startViaEngine: id=$id engineId=$engineId dest=${engineDestPaths[id]}")
-        DownloadDebugLog.record(id, "引擎任务创建", "engineId=$engineId 平台=$platform 连接数=${if (isMagnet) 0 else threadProvider(platform)}")
+        DownloadDebugLog.record(id, "引擎任务创建", "engineId=$engineId 平台=$platform 连接数=${if (isP2P) 0 else threadProvider(platform)}")
     }
 
     /** 转发暂停给引擎 */
@@ -1229,6 +1284,90 @@ class DownloadManager(
             dao.updateStatus(id, DownloadTaskEntity.STATUS_PAUSED)
             finishEngineTask(id)
         }
+    }
+
+    /**
+     * 「继续 / 恢复」时的执行器路由（修复 ed2k 等 P2P 任务被内置下载器执行的回归）。
+     *
+     * 背景：内置分片下载器是纯 HTTP Range 实现，OkHttp 的 `Request.Builder.url(String)` 只认
+     * http/https —— 喂它 `ed2k://` / `magnet:` 会直接抛
+     * `Expected URL scheme 'http' or 'https' but was 'ed2k'` 而失败。而 [start] 顶部的引擎判断
+     * 只看内存 [engineTaskIds]，进程重启或引擎任务结束后它会丢，于是 P2P 任务就落进了内置下载器。
+     * 这里改为回查数据库里持久化的 `engineTaskId` 与任务 URL 重新判定：
+     * - 纯 HTTP 且从未走过引擎 → 内置下载器；
+     * - P2P（磁力 / ed2k / 种子）或已有引擎任务 → 一律回引擎（存在则转发继续，否则重建）。
+     */
+    private suspend fun dispatchEngineResume(task: DownloadTaskEntity, headers: Map<String, String>) {
+        val id = task.id
+        val isP2P = P2PLink.matches(task.url)
+        // 纯 HTTP 且从未交给过引擎：内置下载器即可
+        if (!isP2P && task.engineTaskId.isBlank()) {
+            runTaskWithRetry(id, headers)
+            return
+        }
+        // 引擎不可用：P2P 任务没有退路（内置下载器无法执行），按统一文案落失败；HTTP 任务回退内置
+        if (!GopeedEngine.isInstalled() || !engineEnabledProvider()) {
+            if (isP2P) {
+                val reason = p2pBlockReason(true) ?: "下载引擎不可用"
+                dao.updateStatus(id, DownloadTaskEntity.STATUS_FAILED)
+                dao.updateError(id, reason)
+                DownloadDebugLog.record(id, "失败", reason)
+            } else {
+                runTaskWithRetry(id, headers)
+            }
+            return
+        }
+        // 已有引擎任务：引擎里仍在（且不是错误态）就转发「继续」，否则按 P2P 重建
+        val engineId = task.engineTaskId
+        if (engineId.isNotBlank()) {
+            // ★ 引擎是「按需启动」的：点「继续」时它通常没在跑，此时查任务状态会因连不上而抛异常，
+            //   被下面误判成「任务不存在」→ 白白重建一个（丢进度，引擎里还留下重复任务）。
+            //   所以先按需把引擎拉起来，再问任务状态。
+            if (GopeedEngine.state.value != GopeedEngine.State.RUNNING) {
+                val started = runCatching {
+                    withContext(Dispatchers.IO) { GopeedEngine.start(engineBaseDir(effectiveSaveDir(task))) }
+                }.isSuccess
+                if (started) {
+                    // 引擎刚拉起：清掉配置签名缓存，让同步循环把并发/连接数/代理重新下发一次
+                    lastEngineConfigKey = null
+                    ensureEngineSync()
+                } else {
+                    Log.w(TAG, "dispatchEngineResume: 引擎启动失败，无法确认任务 $engineId 是否仍存在")
+                }
+            }
+            val existing = runCatching {
+                withContext(Dispatchers.IO) { GopeedEngine.taskStatus(engineId) }
+            }.getOrNull()
+            if (existing != null && existing.status != GopeedEngine.TaskStatus.ERROR) {
+                val ok = runCatching {
+                    withContext(Dispatchers.IO) { GopeedEngine.continueTask(engineId) }
+                }.isSuccess
+                if (ok) {
+                    engineTaskIds[id] = engineId
+                    engineDestPaths.putIfAbsent(
+                        id,
+                        File(engineBaseDir(effectiveSaveDir(task)), task.fileName).absolutePath
+                    )
+                    taskStartTimes[id] = System.currentTimeMillis()
+                    dao.updateStatus(id, DownloadTaskEntity.STATUS_DOWNLOADING)
+                    DownloadDebugLog.record(id, "引擎继续", "engineId=$engineId")
+                    beginEngineTask(id)
+                    return
+                }
+                Log.w(TAG, "dispatchEngineResume: 引擎任务 $engineId 继续失败，改为重建")
+            } else {
+                Log.w(TAG, "dispatchEngineResume: 引擎任务 $engineId 不存在或已失败，改为重建")
+            }
+        }
+        // 没有可用引擎任务（从未建过 / 已丢失 / 已失败）：按 P2P 重新建一个
+        startViaEngine(
+            id = id,
+            url = task.url,
+            fileName = task.fileName,
+            headers = headers,
+            platform = if (isP2P) P2PLink.platformFor(task.url) else task.platform,
+            saveDirOverride = task.saveDir
+        )
     }
 
     /** 转发继续给引擎 */
@@ -1309,13 +1448,22 @@ class DownloadManager(
                 when (view.status) {
                     GopeedEngine.TaskStatus.DONE -> completeEngineTask(task, view)
                     GopeedEngine.TaskStatus.ERROR -> {
+                        // 追问引擎的真实失败原因（Task.error / 原始 JSON）：引擎日志不记任务级错误，
+                        // 不取一次的话界面和日志里只剩「Gopeed 引擎下载失败」，完全无法排查。
+                        val detail = runCatching {
+                            withContext(Dispatchers.IO) { GopeedEngine.taskError(task.engineTaskId) }
+                        }.getOrNull()
+                        val reason = detail?.takeIf { it.isNotBlank() }
+                            ?.let { "Gopeed 引擎下载失败：$it" }
+                            ?: "Gopeed 引擎下载失败"
+                        Log.w(TAG, "引擎任务失败：task=${task.id} engineId=${task.engineTaskId} 详情=$reason")
                         DiagnosticLog.error(
                             DiagnosticLog.DOWNLOAD, "engine_task_failed", code = "ENGINE_ERROR",
-                            summary = "task=${task.id} engineId=${task.engineTaskId} name=${task.fileName}"
+                            summary = "task=${task.id} engineId=${task.engineTaskId} name=${task.fileName} reason=$reason"
                         )
                         dao.updateStatus(task.id, DownloadTaskEntity.STATUS_FAILED)
-                        dao.updateError(task.id, "Gopeed 引擎下载失败")
-                        DownloadDebugLog.record(task.id, "失败", "Gopeed 引擎下载失败 engineId=${task.engineTaskId}")
+                        dao.updateError(task.id, reason)
+                        DownloadDebugLog.record(task.id, "失败", reason)
                         finishEngineTask(task.id)
                     }
                     GopeedEngine.TaskStatus.PAUSE -> {
@@ -1353,11 +1501,24 @@ class DownloadManager(
                         val realConnections = runCatching {
                             withContext(Dispatchers.IO) { GopeedEngine.taskConnections(engineId) }
                         }.getOrNull()
+                        // P2P（磁力 / 种子 / ed2k）任务补一份 peer 概览，UI 用它显示「种子 N · 连接 M」
+                        val peerInfo = if (task.platform == DownloadPlatform.MAGNET ||
+                            task.platform == DownloadPlatform.ED2K
+                        ) {
+                            runCatching {
+                                withContext(Dispatchers.IO) { GopeedEngine.taskPeerInfo(engineId) }
+                            }.getOrNull()
+                        } else {
+                            null
+                        }
                         _stats.update {
                             it + (task.id to DownloadStats(
                                 speed = view.speed,
                                 remainMillis = remain,
-                                chunkCount = realConnections ?: threadProvider(task.platform)
+                                chunkCount = realConnections ?: threadsFor(task),
+                                seeds = peerInfo?.seeds ?: -1,
+                                peers = peerInfo?.peers ?: -1,
+                                totalPeers = peerInfo?.total ?: -1
                             ))
                         }
                         notifyProgress(task.id, task.fileName, view.downloaded, view.total)
@@ -1395,8 +1556,8 @@ class DownloadManager(
             size = total,
             summary = "path=$savedPath 文件数=${detail?.fileCount ?: -1} 目录=${detail?.folder ?: false}"
         )
-        if (task.platform == DownloadPlatform.MAGNET) {
-            // 磁力：把界面上占位的显示名换成真正的种子名（失败只记日志，不影响已完成状态）
+        if (task.platform == DownloadPlatform.MAGNET || task.platform == DownloadPlatform.ED2K) {
+            // P2P（磁力 / ed2k / 种子文件）：把界面上占位的显示名换成真正的资源名（失败只记日志，不影响已完成状态）
             if (realName != task.fileName) {
                 runCatching { dao.updateFileName(task.id, realName) }
                     .onFailure { Log.w(TAG, "回写种子名失败：id=${task.id} ${it.message}") }
@@ -1437,7 +1598,7 @@ class DownloadManager(
         var fixed = 0
         for (task in tasks) {
             if (task.engineTaskId.isBlank()) continue
-            if (task.platform == DownloadPlatform.MAGNET) continue
+            if (task.platform == DownloadPlatform.MAGNET || task.platform == DownloadPlatform.ED2K) continue
             if (task.status != DownloadTaskEntity.STATUS_COMPLETED) continue
             if (task.fileName.contains('/')) continue
             if (task.savePath.isBlank()) continue
@@ -1692,7 +1853,7 @@ class DownloadManager(
             ?: taskSizes[id]?.takeIf { it > 0 }
         // 实验性直写：优先按任务已记录的模式恢复；新任务再按开关 + 线程数选择。
         // 已存在的直写临时文件是上次暂停/失败留下的，不能因为用户后来关掉开关就丢掉。
-        val threadCountForMode = threadProvider(task.platform).coerceAtLeast(1)
+        val threadCountForMode = threadsFor(task).coerceAtLeast(1)
         if (task.directPart.isNotBlank() &&
             (task.directMode !in 1..2 || !File(task.directPart).isFile)
         ) {
@@ -1812,7 +1973,7 @@ class DownloadManager(
         // 取到大小后再次检查取消（暂停可能发生在 getTotalSize 期间）
         if (!isTaskActive()) return
 
-        val threadCount = threadProvider(task.platform).coerceAtLeast(1)
+        val threadCount = threadsFor(task).coerceAtLeast(1)
         val chunkDir = chunkDirOf(id).apply { mkdirs() }
         // 分片级校验：本次运行内记录每个分片下载时算出的摘要，合并时逐片重算比对（下面清空旧分片时会一并清掉）
         val partDigests = ConcurrentHashMap<String, String>()
@@ -2391,16 +2552,52 @@ class DownloadManager(
             hlsFile.delete()
             throw IllegalStateException("未授予存储权限，无法保存到下载目录")
         }
+        // HLS 合并产物是 TS：有 ffmpeg 时转封装成 MP4（-c copy），没有则保留 TS
+        val (outFile, outName) = prepareHlsOutput(id, task, hlsFile)
         val savedPath = withContext(Dispatchers.IO) {
-            DownloadSaver.save(task.fileName, hlsFile, effectiveSaveDir(task))
+            DownloadSaver.save(outName, outFile, effectiveSaveDir(task))
         }
             ?: throw IllegalStateException("保存到下载目录失败")
-        val hlsTotal = dao.get(id)?.totalSize ?: 0L
-        completeWithAvg(id, savedPath, hlsTotal)
-        Log.d(TAG, "hlsDownload: id=$id 下载完成 savedPath=$savedPath size=${hlsFile.length()}")
+        // 回写真实大小：HLS 链路此前从不写 totalSize，DB 里恒为 0 → UI 显示 0B
+        val realSize = File(savedPath).length().takeIf { it > 0 } ?: hlsFile.length()
+        if (outFile !== hlsFile) runCatching { outFile.delete() }
+        if (realSize > 0) dao.updateProgress(id, DownloadTaskEntity.STATUS_DOWNLOADING, realSize, realSize)
+        if (outName != task.fileName) dao.updateFileName(id, outName)
+        completeWithAvg(id, savedPath, realSize)
+        Log.d(TAG, "hlsDownload: id=$id 下载完成 savedPath=$savedPath size=$realSize")
         taskCallbacks.remove(id)?.let { cb -> runCatching { cb() } }
         _stats.update { it - id }
         hlsFile.delete()
+    }
+
+    /**
+     * HLS 产物收口：合并出来的 TS 若本机有 ffmpeg 就转封装成 MP4（`-c copy`，不重编码），
+     * 返回（最终文件, 最终文件名）；缺引擎 / 转换失败时原样返回 TS，避免名实不符。
+     * 转封装成功会把文件名同步改成 `.mp4`（列表显示与实际产物一致）。
+     */
+    private suspend fun prepareHlsOutput(
+        id: Long,
+        task: DownloadTaskEntity,
+        merged: File
+    ): Pair<File, String> {
+        if (!task.fileName.endsWith(".ts", ignoreCase = true)) return merged to task.fileName
+        val mp4 = File(AppContext.mergeDir, "hls_$id.mp4")
+        val remuxed = withContext(Dispatchers.IO) {
+            if (FfplayManager.locateFfmpeg() == null) {
+                // 缺引擎：只提示不阻塞 —— 本次照常保留 TS 完成；用户同意后后台装引擎，之后的任务自动转 MP4
+                EngineInstallPrompt.ask(EngineInstallPrompt.Reason.MERGE)
+                false
+            } else {
+                runCatching { mp4.delete() }
+                FfmpegMuxer.remuxToMp4(merged, mp4)
+            }
+        }
+        if (!remuxed || !mp4.isFile || mp4.length() == 0L) {
+            Log.w(TAG, "HLS 未转封装 MP4，保留 TS 产物 id=$id")
+            runCatching { mp4.delete() }
+            return merged to task.fileName
+        }
+        return mp4 to (task.fileName.dropLast(3) + ".mp4")
     }
 
     // ---------- DASH 双轨合轨 / 动态照片合成 ----------
@@ -2414,7 +2611,7 @@ class DownloadManager(
      *     的 moof/trun 并重建时间轴，同样只重封装、不重编码。
      *   - Android 版两路可分片并行；这里同样是**两轨并行 + 每轨多连接 Range 并发**
      *     （B 站 CDN 单连接通常只有 1~2 MB/s，串行单连接是「下载慢」的主因）。
-     *     连接数取用户设置（按 VIDEO 平台）并封顶 [RANGE_WORKERS_CAP]，每块至少 [DASH_CHUNK_MIN]。
+     *     连接数取用户设置（按 VIDEO 平台）并封顶 [DASH_WORKERS_CAP]，每块至少 [DASH_CHUNK_MIN]。
      *     服务器忽略 Range 时自动回退单流整文件（[ChunkDownloader.downloadFull]）。
      *     ⇒ 本路径**不做分片级断点续传**：暂停/失败后临时文件一律丢弃，恢复时两路整文件重下。
      *
@@ -2453,7 +2650,9 @@ class DownloadManager(
             val downloaded = AtomicLong(0)
             val lastAt = AtomicLong(0L)
             // 两轨并行 + 每轨多连接：CDN 对单连接的限速是 B 站下载慢的主因
-            val workers = min(threadProvider(DownloadPlatform.VIDEO), RANGE_WORKERS_CAP).coerceAtLeast(1)
+            // 线程数按任务所属视频平台取（旧任务的 platform 可能是 "video"，同样能取到兜底值）
+            val workerPlatform = task.platform.ifBlank { DownloadPlatform.VIDEO }
+            val workers = min(threadProvider(workerPlatform), DASH_WORKERS_CAP).coerceAtLeast(1)
             val speedRecorder = SpeedRecorder()
             // 下载阶段只映射到 0~90%：把最后 10% 留给合轨，否则合轨时进度会从 100% 往回跳
             fun reported(done: Long): Long = if (total > 0) minOf(done, total) * 9 / 10 else done
@@ -3050,13 +3249,28 @@ class DownloadManager(
             }
             if (!isTaskActive()) throw CancellationException("下载被取消")
             if (!ok) throw IllegalStateException("HLS 转码流下载失败")
+            // HLS 合并产物是 TS：有 ffmpeg 时转封装成 MP4（-c copy），没有则保留 TS
+            val (outFile, outName) = prepareHlsOutput(id, task, loc.partFile)
             val savedPath = withContext(Dispatchers.IO) {
-                DownloadSaver.commitDirectPart(loc.partFile, loc.destDir, loc.finalName)
+                if (outFile === loc.partFile) {
+                    DownloadSaver.commitDirectPart(outFile, loc.destDir, outName)
+                } else {
+                    DownloadSaver.save(outName, outFile, effectiveSaveDir(task))
+                }
             } ?: throw IllegalStateException("直写：无法创建最终文件（目标目录不可用或文件名冲突）")
+            val realSize = File(savedPath).length().takeIf { it > 0 } ?: loc.partFile.length()
+            if (outFile !== loc.partFile) {
+                // 转封装路径：TS 临时文件没走 commitDirectPart（改名即提交），需自行清理，
+                // 否则会在下载目录留下一个 .part 孤儿文件
+                runCatching { outFile.delete() }
+                DownloadSaver.deleteDirectPart(loc.partFile.absolutePath)
+            }
             dao.updateDirect(id, "", 0)
-            val hlsTotal = dao.get(id)?.totalSize ?: 0L
-            completeWithAvg(id, savedPath, hlsTotal)
-            Log.d(TAG, "hlsDownloadDirect: id=$id 直写完成 savedPath=$savedPath")
+            // 回写真实大小：HLS 链路此前从不写 totalSize，DB 里恒为 0 → UI 显示 0B
+            if (realSize > 0) dao.updateProgress(id, DownloadTaskEntity.STATUS_DOWNLOADING, realSize, realSize)
+            if (outName != task.fileName) dao.updateFileName(id, outName)
+            completeWithAvg(id, savedPath, realSize)
+            Log.d(TAG, "hlsDownloadDirect: id=$id 直写完成 savedPath=$savedPath size=$realSize")
             taskCallbacks.remove(id)?.let { cb -> runCatching { cb() } }
         } catch (e: CancellationException) {
             DownloadSaver.deleteDirectPart(directPath)
@@ -3093,7 +3307,7 @@ class DownloadManager(
         }
         val part = loc.partFile
         val destDir = part.parentFile ?: throw IllegalStateException("直写：目标目录不可用")
-        val threadCount = threadProvider(task.platform).coerceAtLeast(2)
+        val threadCount = threadsFor(task).coerceAtLeast(2)
         // 迅雷 CDN 对单文件并发 Range 有阈值（与缓存路径同一套限制），直写也必须钳到安全上限
         val isXunlei = headers["User-Agent"]?.contains("xunlei", ignoreCase = true) == true ||
             task.url.contains("xunlei", ignoreCase = true)

@@ -40,13 +40,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -66,6 +66,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.yunx.app.AppContext
 import com.yunx.app.data.announcement.AnnouncementReadStore
 import com.yunx.app.data.backup.AuthBackupManager
+import com.yunx.app.data.bridge.BrowserBridge
 import com.yunx.app.data.db.AppDatabase
 import com.yunx.app.data.download.ChunkDownloader
 import com.yunx.app.data.download.DownloadManager
@@ -76,6 +77,7 @@ import com.yunx.app.data.network.C139Api
 import com.yunx.app.data.network.GitHubApi
 import com.yunx.app.data.network.GitHubMirror
 import com.yunx.app.data.network.GitHubTokenStore
+import com.yunx.app.data.network.QuarkConstants
 import com.yunx.app.data.network.GuangYaApi
 import com.yunx.app.data.network.HttpClients
 import com.yunx.app.data.network.ILanzouApi
@@ -86,6 +88,8 @@ import com.yunx.app.data.network.QuarkApi
 import com.yunx.app.data.network.TokenCheck
 import com.yunx.app.data.network.UCApi
 import com.yunx.app.data.network.XunleiApi
+import com.yunx.app.data.network.video.VideoMedia
+import com.yunx.app.data.network.video.VideoParseResult
 import com.yunx.app.data.network.video.VideoPlatform
 import com.yunx.app.data.download.VideoDownloads
 import com.yunx.app.data.update.UpdateChecker
@@ -121,6 +125,7 @@ import com.yunx.app.data.repository.XunleiResolveRepository
 import com.yunx.app.ui.clipboard.ClipboardLinkController
 import com.yunx.app.ui.clipboard.ClipboardLinkDetector
 import com.yunx.app.ui.clipboard.ClipboardLinkPopup
+import com.yunx.app.ui.components.BrowserHookController
 import com.yunx.app.ui.components.FadeAlertDialog
 import com.yunx.app.ui.components.OverlayDialogHost
 import com.yunx.app.ui.login.BaiduLoginScreen
@@ -152,6 +157,7 @@ import com.yunx.app.ui.screens.StorageDirectoryScreen
 import com.yunx.app.ui.screens.OnboardingScreen
 import com.yunx.app.ui.screens.ResolveScreen
 import com.yunx.app.ui.screens.VideoResolveScreen
+import com.yunx.app.ui.screens.VideoStreamMode
 import com.yunx.app.ui.screens.SettingsScreen
 import com.yunx.app.ui.screens.SupportScreen
 import com.yunx.app.ui.screens.ThemeScreen
@@ -186,6 +192,7 @@ import com.yunx.app.ui.viewmodel.UCCoudViewModel
 import com.yunx.app.ui.viewmodel.XunleiAccountViewModel
 import com.yunx.app.ui.viewmodel.XunleiCloudViewModel
 import com.yunx.app.util.Log
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
@@ -211,6 +218,12 @@ fun MainScreen(
     onMinimizeToTray: () -> Unit = {}
 ) {
     var currentTab by rememberSaveable { mutableStateOf(MainTab.Resolve) }
+    /**
+     * 「回到网盘总览」信号：点侧栏「网盘」Tab（已在网盘页时）或离开网盘 Tab 时自增，
+     * DriveScreen 消费后把所有网盘浏览态复位。没有它的话，浏览页的开关是 rememberSaveable，
+     * 侧栏点回网盘仍停在刚才那个网盘里，用户找不到回总览的入口。
+     */
+    var driveHomeSignal by remember { mutableStateOf(0) }
     // 网盘页：四宫格 / 列表布局切换
     var driveGridMode by rememberSaveable { mutableStateOf(false) }
     var showQuarkLogin by rememberSaveable { mutableStateOf(false) }
@@ -283,6 +296,8 @@ fun MainScreen(
     val repository = remember {
         QuarkAccountRepository(db.quarkAccountDao(), api)
     }
+    // 夸克分享仓库：解析页取链用，启动清理遗留临时转存也用它（同一个实例）
+    val quarkResolveRepository = remember { QuarkResolveRepository(api) }
     val ucRepository = remember {
         UCAccountRepository(db.ucAccountDao(), ucApi)
     }
@@ -614,7 +629,7 @@ fun MainScreen(
     val resolveViewModel: ResolveViewModel = viewModel(
         factory = ResolveViewModel.Factory(
             repository,
-            QuarkResolveRepository(api),
+            quarkResolveRepository,
             ucRepository,
             UCResolveRepository(ucApi),
             xunleiRepository,
@@ -640,7 +655,9 @@ fun MainScreen(
             // GitHub 镜像前缀：自动（实测选最快）或用户手动固定，统一由 GitHubMirror 解析
             { GitHubMirror.activePrefix() },
             // 取链方式开关：设置页「免转存下载」实时生效
-            { settings.quarkNoSaveDownload }
+            { settings.quarkNoSaveDownload },
+            // 下载时同时保存到网盘：设置页默认值，解析页可临时覆盖
+            saveOnDownloadDefaultProvider = { settings.saveToCloudOnDownload }
         )
     )
     val downloadViewModel: DownloadViewModel = viewModel(
@@ -791,24 +808,12 @@ fun MainScreen(
             VideoResolveScreen(
                 viewModel = videoResolveViewModel,
                 onBack = { videoResolveText = null },
-                onDownload = { medias ->
+                onDownload = { medias, streamMode ->
                     val result = (videoResolveViewModel.uiState as? VideoResolveUiState.Success)?.result
                     if (result != null && medias.isNotEmpty()) {
                         scope.launch {
-                            medias.forEachIndexed { index, media ->
-                                downloadManager.enqueue(
-                                    url = media.url,
-                                    fileName = VideoDownloads.fileNameFor(result, media, index, medias.size),
-                                    headers = media.headers,
-                                    size = media.size,
-                                    platform = DownloadPlatform.VIDEO,
-                                    // DASH 音轨 / 动图资源随任务落库，由 DownloadManager 决定是否合轨或合成
-                                    mergeAudioUrl = media.audioUrl,
-                                    mergeAudioHeaders = media.audioHeaders,
-                                    motionUrl = media.motionUrl
-                                )
-                            }
-                            SnackbarController.show("已加入下载队列（${medias.size} 项）")
+                            val queued = enqueueVideoMedias(downloadManager, result, medias, streamMode)
+                            SnackbarController.show("已加入下载队列（$queued 项）")
                             currentTab = MainTab.Download
                             videoResolveViewModel.reset()
                             videoResolveText = null
@@ -842,8 +847,6 @@ fun MainScreen(
     val topAppBarState = rememberTopAppBarState()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(topAppBarState)
 
-    // 全局 Snackbar 宿主
-    val snackbarHostState = rememberGlobalSnackbarHostState()
 
     /**
      * 应用内公告：顶栏红点角标 + 启动弹窗。
@@ -863,6 +866,24 @@ fun MainScreen(
     // 启动时同步一次「Gopeed 内核是否已导入」（进程内状态与磁盘事实对齐，供引擎页与分流判断使用）
     LaunchedEffect(Unit) { GopeedEngine.syncInstalledState() }
 
+    /**
+     * 启动时清理夸克遗留的临时转存目录（tr_*）。
+     * 正常路径下这些目录由「下载完成」回调删除，但回调是内存闭包，进程被杀 / 重启后续跑的
+     * 任务没有回调，目录就一直留在用户网盘里 —— 看起来就像「下载必须得先转存」。
+     * 仍在下载 / 暂停 / 失败待重下的任务引用着的目录（cleanupId）不能碰，删了正在下的直链会 404。
+     */
+    LaunchedEffect(Unit) {
+        val cookie = repository.getAccount()?.cookie.orEmpty()
+        if (!QuarkConstants.isValidCookie(cookie)) return@LaunchedEffect
+        val keepFids = runCatching { downloadManager.tasks.first() }
+            .getOrDefault(emptyList())
+            .filter { it.status != DownloadTaskEntity.STATUS_COMPLETED && it.cleanupId.isNotBlank() }
+            .map { it.cleanupId }
+            .toSet()
+        val swept = runCatching { quarkResolveRepository.sweepLeftoverTempDirs(cookie, keepFids) }.getOrDefault(0)
+        if (swept > 0) SnackbarController.show("已清理夸克网盘遗留的临时转存目录 $swept 个")
+    }
+
     // 启动时按需刷新 GitHub 镜像测速（结果过期或从未测过才跑，避免每次启动都测速）
     LaunchedEffect(Unit) { GitHubMirror.ensureFresh() }
 
@@ -877,10 +898,15 @@ fun MainScreen(
         val release = runCatching {
             UpdateChecker.fetchLatestRelease(settings.acceptPrereleaseUpdate)
         }.getOrNull() ?: return@LaunchedEffect
-        if (UpdateChecker.compareVersions(release.tagName, UpdateChecker.currentVersion()) <= 0) {
+        val current = UpdateChecker.currentVersion()
+        if (UpdateChecker.compareVersions(release.tagName, current) <= 0) {
             return@LaunchedEffect
         }
-        if (AppContext.miscPrefs.get("ignored_version", null) == release.tagName) return@LaunchedEffect
+        // 强制更新不受「不再提示该版本」影响（用户之前忽略过也要拦）
+        val mandatory = release.isMandatoryFor(current)
+        if (!mandatory && AppContext.miscPrefs.get("ignored_version", null) == release.tagName) {
+            return@LaunchedEffect
+        }
         startupUpdateRelease = release
     }
 
@@ -1040,6 +1066,7 @@ fun MainScreen(
                             onQuarkLogin = { showQuarkLogin = true },
                             onQuarkLogout = { viewModel.logout() },
                             onDownloadStarted = {},
+                            homeSignal = driveHomeSignal,
                             onUCLogin = { showUCLogin = true },
                             onUCLogout = { ucViewModel.logout() },
                             onXunleiLogin = { showXunleiLogin = true },
@@ -1109,10 +1136,14 @@ fun MainScreen(
             Row(modifier = Modifier.fillMaxSize()) {
                 MainNavigationRail(
                     currentTab = currentTab,
-                    // 切 Tab 视为离开视频解析页（侧栏现在可点，不能让它一直压在新 Tab 上面）
                     onTabSelected = {
-                        currentTab = it
+                        // 切 Tab 视为离开视频解析页（侧栏现在可点，不能让它一直压在新 Tab 上面）
                         videoResolveText = null
+                        // 再次点「网盘」Tab 或离开网盘 Tab 时，让浏览页退回全部网盘总览
+                        if (it != MainTab.Drive || currentTab == MainTab.Drive) {
+                            driveHomeSignal++
+                        }
+                        currentTab = it
                     }
                 )
                 Column(
@@ -1136,10 +1167,7 @@ fun MainScreen(
                 }
             }
             // 全局 Snackbar（悬浮底部居中）
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
+            GlobalSnackbarHost()
         }
 
         // 关于云析：叠加覆盖层（淡入 + 轻微缩放过渡）
@@ -1338,6 +1366,81 @@ fun MainScreen(
         // 合轨在后台线程触发，必须挂在根部常驻组合里才弹得出来。
         EngineInstallPromptHost()
 
+        // 浏览器插件劫持下载询问弹窗是「独立顶层窗口」（见 BrowserHookDialogWindow，
+        // 挂在 Main.kt 的 application 内），拿不到这里的 DownloadManager / scope，
+        // 所以把「交给云析下载」的处理器注册进去；窗口关闭时注销。
+        DisposableEffect(Unit) {
+            BrowserHookController.onAccept = { hook, dir, threads ->
+                scope.launch {
+                    downloadManager.enqueue(
+                        url = hook.url,
+                        fileName = hook.fileName,
+                        headers = hook.headers,
+                        size = hook.fileSize,
+                        platform = DownloadPlatform.BROWSER,
+                        saveDir = dir,
+                        threads = threads
+                    )
+                    currentTab = MainTab.Download
+                    SnackbarController.show("已交给云析下载：${hook.fileName}（$threads 线程）")
+                }
+            }
+            onDispose { BrowserHookController.onAccept = null }
+        }
+
+        // 浏览器插件「B 站专属页」提交的解析下载：插件页已选好清晰度与下载方式，
+        // 这里静默解析后直接入队（不弹窗、不切到解析页），只切下载 Tab 并轻提示结果。
+        DisposableEffect(Unit) {
+            BrowserBridge.onBiliRequest = { req ->
+                scope.launch {
+                    try {
+                        val result = videoResolveViewModel.parseForPlugin(
+                            req.bvid,
+                            req.qn.takeIf { it > 0 }
+                        )
+                        val queued = enqueueVideoMedias(
+                            downloadManager, result, result.medias, biliStreamMode(req.mode)
+                        )
+                        if (queued > 0) {
+                            SnackbarController.show("已加入下载队列（$queued 项）")
+                            currentTab = MainTab.Download
+                        } else {
+                            SnackbarController.show("B 站未解析到可下载的资源")
+                        }
+                    } catch (e: Exception) {
+                        SnackbarController.show("B 站解析失败：${e.message ?: "未知错误"}")
+                    }
+                }
+                true
+            }
+            onDispose { BrowserBridge.onBiliRequest = null }
+        }
+
+        // 浏览器插件「其他视频平台页」（抖音 / 微博 / AcFun …）提交的解析下载：
+        // 插件读不到这些平台的清晰度档位，只把页面链接交过来，这里静默解析（含短链展开）后按合并下载入队。
+        DisposableEffect(Unit) {
+            BrowserBridge.onVideoRequest = { req ->
+                scope.launch {
+                    try {
+                        val result = videoResolveViewModel.parseForPluginUrl(req.url)
+                        val queued = enqueueVideoMedias(
+                            downloadManager, result, result.medias, VideoStreamMode.MERGE
+                        )
+                        if (queued > 0) {
+                            SnackbarController.show("已加入下载队列（$queued 项）")
+                            currentTab = MainTab.Download
+                        } else {
+                            SnackbarController.show("${req.platform.ifBlank { "视频" }} 未解析到可下载的资源")
+                        }
+                    } catch (e: Exception) {
+                        SnackbarController.show("视频解析失败：${e.message ?: "未知错误"}")
+                    }
+                }
+                true
+            }
+            onDispose { BrowserBridge.onVideoRequest = null }
+        }
+
         // 关闭确认弹窗（退出 / 最小化到托盘 / 取消）
         CloseConfirmDialog(
             visible = showCloseDialog,
@@ -1527,7 +1630,8 @@ fun MainScreen(
                         // （将来有更新的版本仍会提示，不是全局关闭更新检查）
                         AppContext.miscPrefs.put("ignored_version", release.tagName)
                         startupUpdateRelease = null
-                    }
+                    },
+                    mandatory = release.isMandatoryFor(UpdateChecker.currentVersion())
                 )
             }
         }
@@ -1560,6 +1664,105 @@ fun MainScreen(
         }
         }
     }
+}
+
+/**
+ * 把一批视频媒体按分轨方式加入下载队列，返回实际入队条数。
+ *
+ * - 非分轨媒体（[VideoMedia.audioUrl] 为空）或 [VideoStreamMode.MERGE]：一条任务，音轨随任务落库由
+ *   `DownloadManager` 负责合轨；
+ * - [VideoStreamMode.AUDIO]：只下音轨（`.m4a`）；[VideoStreamMode.VIDEO]：只下视频轨（无声）；
+ * - [VideoStreamMode.SEPARATE]：两轨各一条任务，不合轨。
+ *
+ * 解析页的「下载所选」与浏览器插件「B 站专属页」都走这里，保证两条入口行为一致。
+ */
+private suspend fun enqueueVideoMedias(
+    downloadManager: DownloadManager,
+    result: VideoParseResult,
+    medias: List<VideoMedia>,
+    streamMode: VideoStreamMode
+): Int {
+    val platform = DownloadPlatform.forVideoPlatform(result.platform)
+    var queued = 0
+    suspend fun enqueueOne(
+        url: String,
+        fileName: String,
+        headers: Map<String, String>,
+        size: Long,
+        mergeAudioUrl: String = "",
+        mergeAudioHeaders: Map<String, String> = emptyMap(),
+        motionUrl: String = ""
+    ) {
+        if (url.isBlank()) return
+        downloadManager.enqueue(
+            url = url,
+            fileName = fileName,
+            headers = headers,
+            size = size,
+            platform = platform,
+            // DASH 音轨 / 动图资源随任务落库，由 DownloadManager 决定是否合轨或合成
+            mergeAudioUrl = mergeAudioUrl,
+            mergeAudioHeaders = mergeAudioHeaders,
+            motionUrl = motionUrl
+        )
+        queued++
+    }
+    medias.forEachIndexed { index, media ->
+        val baseName = VideoDownloads.fileNameFor(result, media, index, medias.size)
+        val stem = baseName.substringBeforeLast('.', baseName)
+        val ext = baseName.substringAfterLast('.', "mp4").ifBlank { "mp4" }
+        val dash = media.audioUrl.isNotBlank()
+        when {
+            // 非分轨媒体（或用户选「合并」）：保持原有行为
+            !dash || streamMode == VideoStreamMode.MERGE -> enqueueOne(
+                url = media.url,
+                fileName = baseName,
+                headers = media.headers,
+                size = media.size,
+                mergeAudioUrl = media.audioUrl,
+                mergeAudioHeaders = media.audioHeaders,
+                motionUrl = media.motionUrl
+            )
+            // 仅音频：只下音轨，存 .m4a
+            streamMode == VideoStreamMode.AUDIO -> enqueueOne(
+                url = media.audioUrl,
+                fileName = "$stem-audio.m4a",
+                headers = media.audioHeaders,
+                size = -1L
+            )
+            // 仅视频：只下视频轨（无声）
+            streamMode == VideoStreamMode.VIDEO -> enqueueOne(
+                url = media.url,
+                fileName = "$stem-video.$ext",
+                headers = media.headers,
+                size = media.size
+            )
+            // 分别保存：两轨各一个任务，不合轨
+            else -> {
+                enqueueOne(
+                    url = media.url,
+                    fileName = "$stem-video.$ext",
+                    headers = media.headers,
+                    size = media.size
+                )
+                enqueueOne(
+                    url = media.audioUrl,
+                    fileName = "$stem-audio.m4a",
+                    headers = media.audioHeaders,
+                    size = -1L
+                )
+            }
+        }
+    }
+    return queued
+}
+
+/** 插件页传来的下载方式字符串 → 分轨下载方式（未知值按「合并」处理） */
+private fun biliStreamMode(mode: String): VideoStreamMode = when (mode.lowercase()) {
+    "video" -> VideoStreamMode.VIDEO
+    "audio" -> VideoStreamMode.AUDIO
+    "separate" -> VideoStreamMode.SEPARATE
+    else -> VideoStreamMode.MERGE
 }
 
 /**

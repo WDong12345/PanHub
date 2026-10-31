@@ -7,7 +7,8 @@
 **粘贴分享链接，直接高速下载 —— 云析 YunX 官方 Windows 桌面版**
 
 网盘：夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版；
-视频：哔哩哔哩 / 小红书 / 抖音 / 微博 / 快手 / AcFun / Pixiv。Range 分片并发 + 断点续传，B 站高清自动合轨。
+视频：哔哩哔哩 / 小红书 / 抖音 / 微博 / 快手 / AcFun / Pixiv；另支持磁力 / BT 种子 / ed2k 等 P2P 链接。
+Range 分片并发 + 断点续传，B 站高清自动合轨。
 
 [![Release](https://img.shields.io/github/v/release/tidain/YunX-Desktop?style=flat-square\&label=release\&color=4C8BF5)](https://github.com/tidain/YunX-Desktop/releases/latest)
 [![Stars](https://img.shields.io/github/stars/tidain/YunX-Desktop?style=flat-square\&logo=github\&color=4C8BF5)](https://github.com/tidain/YunX-Desktop/stargazers)
@@ -16,7 +17,7 @@
 [![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square\&logo=kotlin\&logoColor=white)](https://kotlinlang.org/)
 [![Compose](https://img.shields.io/badge/Compose%20Multiplatform-Desktop-4285F4?style=flat-square\&logo=jetpackcompose\&logoColor=white)](https://www.jetbrains.com/lp/compose-multiplatform/)
 
-[下载最新版](https://github.com/tidain/YunX-Desktop/releases/latest) · [功能](docs/FEATURES.md) · [使用](docs/USAGE.md) · [构建](docs/BUILD.md) · [常见问题](#常见问题) · [与安卓版差异](docs/UPSTREAM-DIFF.md)
+[下载最新版](https://github.com/tidain/YunX-Desktop/releases/latest) · [功能](docs/FEATURES.md) · [使用](docs/USAGE.md) · [浏览器插件](#浏览器插件) · [构建](docs/BUILD.md) · [常见问题](#常见问题) · [与安卓版差异](docs/UPSTREAM-DIFF.md)
 
 </div>
 
@@ -30,7 +31,8 @@
 
 ## 简介
 
-云析 YunX 的 **官方 Windows 桌面版**：粘贴**网盘分享链接**或**视频作品链接**，即可浏览内容、在线预览并直接高速下载，全程在电脑上完成。
+云析 YunX 的 **官方 Windows 桌面版**：粘贴**网盘分享链接**或**视频作品链接**，即可浏览内容、在线预览并直接高速下载，全程在电脑上完成；
+也支持**磁力 / BT 种子 / ed2k** 等 P2P 链接下载。
 网盘与视频平台都支持多账号（主账号 / 备注），登录凭证加密存本机，并可导出加密备份换机恢复。
 提供**免安装便携版**（整个文件夹拷走即用）与**安装版**（开始菜单 / 桌面快捷方式，可卸载）两种分发形式。
 
@@ -67,8 +69,22 @@
 
 - 视频解析：抖音 / 快手 / 微博 / 小红书 / 哔哩哔哩 / AcFun / Pixiv
 
+- 磁力 / BT 种子 / ed2k（P2P 下载，可导入本地种子文件）
+
 > \[!WARNING]
 > **不建议使用百度网盘，可能导致账号被风控！**
+
+## 浏览器插件
+
+仓库 `browser-extension/` 内含 Chrome / Edge 扩展「**云析下载助手**」（Manifest V3）—— 让浏览器下载接管到云析的多线程下载。
+
+- **嗅探页面资源**：列出当前网页里可下载的媒体与文件，按图片 / 视频 / 音频 / 文档 / 压缩包 / 程序 / 字体分类，图片与视频支持卡片预览。
+- **接管浏览器下载**：浏览器开始下载时自动接管（取消浏览器下载并抹掉记录），由云析弹窗询问保存目录与线程数（最高 512，超过 32 需二次确认）。
+- **归还浏览器下载**：点「归还浏览器下载」后重新发起浏览器原生下载，并对该页面网站（根域名及其子域名）写入 **5 分钟冷却**；冷却期内打开插件可看到「还有 X 分 YY 秒」倒计时，并可点「立即重新开始」单独解除当前网站的冷却。
+- **视频平台卡片**：B 站视频页可选清晰度与下载方式；抖音 / 微博 / AcFun 视频页可一键交给云析解析下载。
+- **安全**：扩展与云析通过本机回环 HTTP（`127.0.0.1`，随机 token）通信，网页脚本无法伪造请求；**云析没运行时探测不到端口，扩展完全不干预浏览器下载**。
+
+安装、开关与工作原理见 [浏览器插件说明](browser-extension/README.md)。
 
 ## 功能
 
@@ -77,6 +93,8 @@
 - **视频解析与预览** —— 粘贴抖音 / 快手 / 微博 / 小红书 / B站 / AcFun / Pixiv 作品链接（短链、口令、整段文案均可）即可解析；在线预览优先用 **ffplay** 直读直链（真·边下边播，HLS 原生支持），本机没装 FFmpeg 时回退内置播放器并可一键下载引擎到应用私有目录（不改系统环境变量）；图集可放大查看，下载支持 DASH 合轨（优先 ffmpeg `-c copy`）与 Live Photo 动图合成（可存动态照片 / 静图 / 视频）
 
 - **高速下载** —— Range 分片并发 + 断点续传 + 慢连接自动换线 + 全局限速；B 站高清分轨两轨并行下载后自动合轨
+
+- **P2P 下载** —— 磁力 / BT 种子 / ed2k 电驴链接交给 Gopeed 引擎下载；支持导入本地 `.torrent` 种子文件、BT Tracker 服务器二级页管理与 DHT 开关，下载中可查看「种子 / 连接 / 节点」概览
 
 - **GitHub 浏览与 README 渲染** —— 浏览仓库文件树 / Releases / 账号仓库列表，README 与更新说明以 GFM Markdown 渲染
 
@@ -210,6 +228,9 @@ cd YunX-Desktop
 - PC 版仓库：<https://github.com/tidain/YunX-Desktop>
 
 - 问题与建议：<https://github.com/tidain/YunX-Desktop/issues>
+
+## 友情链接
+- 云析的Docker社区移植版（基于本仓库修改，作为本仓库的下游分支）：[mu-zi-lee/YunX-Docker](https://github.com/mu-zi-lee/YunX-Docker)
 
 ## 贡献者
 

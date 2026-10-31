@@ -478,9 +478,53 @@
 | 认证备份的 Android auto-backup 规则（`AuthBackupManager` 里的 XML 片段） | **不适用**：桌面备份走文件导入导出 |
 | 调试页「重连」文案与按钮 | 桌面已有等价入口，仅同步判据与日志文本（「手动抢占」→「手动重连」） |
 
+### 9.17 本次对齐（上游 1.3.1 → 1.3.3 十四个提交）
 
+本轮覆盖上游 `cb2926b`（强制更新字段）、`66b800c`（线程数按平台分组）、`d790e85`（WAL 误删导致登录态丢失）、
+`f9bb45e`（B 站镜像优选 / DASH 并发 32）、`2b55bbf`/`2b17a02`/`71e99d2`（版本号与 ffplay 预览）、
+`2c9e131`（B 站四种下载方式）、`ba1b131`/`b84d6e6`/`663e81e`（浏览器插件桥接与劫持弹窗）、
+`f5b0544`/`7980f57`（顶部轻提示）、`88b65bd`/`d3d75df`/`55daab0`（插件分类预览 / 定位修复）、
+`33f9ba5`（1.3.2 插件冷却与视频桥接）、`d123ea0`（CEF 自愈）、`87ff5d6`（1.3.3 P2P / Tracker / 启动位置）。
+对齐点由 `3916e02` 推进到 **`87ff5d6`**，桌面版本号定为 **1.3.4**。
 
+#### 已移植（以最新上游树为基底，逐文件重放我方改动）
 
+| 上游提交 | 内容 | 桌面实现与取舍 |
+| --- | --- | --- |
+| `cb2926b`/`2b55bbf` | 强制更新字段 + `version.txt` 第二行 Beta 标记 | 原样采用（`UpdateChecker.isMandatoryFor`、`APP_IS_PREVIEW`）；桌面 `version.txt` 同步为 `1.3.4` / `Beta=0` |
+| `66b800c` | 线程数按平台分组（网盘 / 视频 / 通用）+ 一列两列切换 | 原样采用；我方「按网盘分别设置」的说明文案由上游新文案取代 |
+| `d790e85` | WAL 误删导致登录态 / 任务被清空 | **重要修复**，原样采用（`PRAGMA wal_autocheckpoint=1`、退出 `wal_checkpoint(TRUNCATE)`、自愈不再无条件删 `-wal`） |
+| `f9bb45e` | B 站优先官方 CDN 镜像、DASH 并发独立上限 32 | 原样采用 |
+| `2c9e131` | B 站分轨四种下载方式（合并 / 仅音频 / 仅视频 / 分别保存） | 原样采用（`VideoStreamMode` + `enqueueVideoMedias`） |
+| `ba1b131`~`33f9ba5` | 浏览器插件（MV3）+ 本机回环桥 + 劫持弹窗 + 冷却倒计时 + 视频桥接 | 原样采用（`browser-extension/`、`data/bridge/`、`BrowserHookDialog`、`/bili`、`/video` 通道）；桌面劫持弹窗本就是独立置顶窗口，与上游一致 |
+| `f5b0544`/`7980f57` | 顶部居中轻提示（状态色 / 多条并排） | **原样采用**，替换我方原有的底部 Snackbar 宿主；我方 `SnackbarController` 事件队列保留 |
+| `55daab0` | 「在文件夹中显示」逗号路径截断 | 原样采用（改走 `ShellExecute`） |
+| `d123ea0` | CEF 数据 / 原生库自愈、原子化解包 | 原样采用（`jcef.crashed-*` 隔离重建、`install.lock` + 文件清单校验） |
+| `87ff5d6` | P2P（磁力 / .torrent / ed2k）、Tracker 管理、DHT 开关、启动位置、滚动条常驻、失败任务置顶 | 原样采用（`MagnetLink` 扩展、`TrackerListScreen`、`PositionPicker`、`SettingsRepository.btTrackers`、`DownloadScreen` 常驻滚动条与置顶排序） |
+
+#### 我方个性化（本次重放，含修复 2b38f5a 意外丢失的 5 处）
+
+| 能力 | 位置 | 说明 |
+| --- | --- | --- |
+| 网盘目录树（10 平台） | `ui/components/DirTree.kt`、各 `*CloudScreen` / `*CloudViewModel` | 左侧资源管理器式懒加载目录树，点击节点直切右侧列表 |
+| 行尾内联操作按钮 | `ui/resolve/ShareDetailScreen.kt`、`CloudFileSheets` | `FileRowAction` + `ActionStep.initialStep` 直达步骤，取代「三点菜单」 |
+| 取链即入队、不自动跳页 | `ResolveViewModel`、`MainScreen` | 保留我方的「入队不切页」；上游视频 / 更新 / 浏览器桥接路径仍按各自语义切到下载页 |
+| 下载时同时保存到网盘（夸克） | `SettingsRepository`、`SettingsScreen`、`ShareDetailScreen`、`ResolveViewModel` | 分享页可勾选，设置页可设默认；转存后原地续下 |
+| **网盘总览一键返回** | `MainScreen.driveHomeSignal`、`DriveScreen.homeSignal` | **本次修复**：2b38f5a 曾丢失该功能，现已恢复 |
+| **文件夹组批量暂停 / 继续 / 删除** | `DownloadViewModel.pauseTasks/resumeTasks/removeTasks`、`DownloadScreen` | **本次修复**：2b38f5a 曾丢失批量按钮与确认框，现已恢复 |
+| **下载列表底部留白 140dp** | `DownloadScreen.contentPadding` | **本次修复**：避免文件夹组头被悬浮「+」按钮遮挡 |
+| **夸克 tr_* 临时目录启动清理** | `DownloadManager.cleanupId`、`QuarkApi.deleteFiles`、`QuarkResolveRepository.sweepLeftoverTempDirs`、`MainScreen` | **本次修复**：`cleanupId` 链路（入参 → 落库 → 重新下载续传 → 启动扫描保留在跑任务）曾丢失，现已恢复 |
+| **下载子任务层级缩进** | `DownloadScreen.DownloadSubTaskRow(depth)` | **本次修复**：按相对路径排序 + 左侧竖线 + 逐级缩进，曾丢失，现已恢复 |
+| 中文口令（迅雷 / 星海） | `XunleiKouling`、`StarSeaApi` | 纯逻辑，随上游保留 |
+| 免转存下载开关 | `SettingsRepository.quarkNoSaveDownload` | 与上游同名同义 |
+
+#### 跳过 / 桌面差异
+
+| 上游内容 | 处理 |
+| --- | --- |
+| Android `Activity` / `Intent` / 前台服务 / WebView 相关改动 | **不适用**：桌面无对应形态（JCEF、窗口常驻、`WindowsKeepAwake`） |
+| README 友情链接、App 图标、F-Droid 元数据 | **不移植**：桌面 README 与分发渠道独立维护 |
+| `Releases.md` | 采用上游文件（发布说明与版本号同步） |
 
 
 

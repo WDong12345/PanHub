@@ -68,14 +68,13 @@ dependencies {
         exclude(group = "me.friwi", module = "gluegen-rt")
     }
     // ★ 原生库只在开发运行（gradle run）时由 jcefmaven 从 classpath 里取；
-    //   发布包不随带这个 120MB 的 jar，改由打包脚本用 JcefNativesPacker 重压成
-    //   app\jcef-natives.tar.xz（约 90MB，LZMA2），首次使用时由 JcefNativesInstaller 解开。
+    //   发布包不随带这个 120MB 的 jar，改由打包脚本用 JcefNativesPacker 重打成
+    //   app\jcef-natives.tar.gz（裁剪语言包），首次使用时由 JcefNativesInstaller 解开。
     //   见 portable-package.ps1 [2c/5] 与 ui/jcef/JcefNativesInstaller.kt。
     implementation("me.friwi:jcef-natives-windows-amd64:jcef-1770317+cef-132.3.1+g144febe+chromium-132.0.6834.83")
 
-    // tar.xz 解压/压缩：CEF 原生库发布包（打包期压缩 + 运行期自解包）
-    implementation("org.tukaani:xz:1.10")
-    // tar 读写（XZ 只负责压缩层，tar 容器仍用 commons-compress；jcefmaven 已传递引入，这里显式声明）
+    // tar.gz 读写：CEF 原生库发布包（打包期重打成 gzip，运行期自解包）
+    // jcefmaven 已传递引入 commons-compress，这里显式声明版本以保证稳定
     implementation("org.apache.commons:commons-compress:1.27.1")
 
     testImplementation(kotlin("test"))
@@ -89,15 +88,27 @@ kotlin {
 }
 
 // ---- 版本号单一来源：仓库根目录 version.txt（jpackage / 便携包 / 安装包 / 应用内版本全部由它派生）----
-val appVersion = rootProject.file("version.txt").readText().trim()
+// 格式：第一行版本号（如 1.3.1）；第二行 Beta=1 / Beta=0（1=预览版，0 或缺省=正式版）
+val versionLines = rootProject.file("version.txt").readLines().map { it.trim() }.filter { it.isNotEmpty() }
+val appVersion = versionLines.firstOrNull().orEmpty()
 require(appVersion.matches(Regex("""\d+(\.\d+)*"""))) { "version.txt 内容非法: '$appVersion'" }
+val appIsPreview = versionLines.drop(1).firstOrNull()?.let { line ->
+    when (line.substringAfter('=', "").trim()) {
+        "1" -> true
+        "0" -> false
+        // 兼容旧写法（preview / beta）
+        else -> line.lowercase() in setOf("preview", "beta")
+    }
+} ?: false
 
 // 生成 Kotlin 常量供 UpdateChecker 使用，避免应用内再维护一份硬编码
 val generateAppVersion by tasks.registering {
     val outDir = layout.buildDirectory.dir("generated/appVersion/kotlin")
     val version = appVersion
+    val isPreview = appIsPreview.toString()
     outputs.dir(outDir)
     inputs.property("version", version)
+    inputs.property("isPreview", isPreview)
     doLast {
         val pkgDir = outDir.get().asFile.resolve("com/yunx/app")
         pkgDir.mkdirs()
@@ -107,11 +118,23 @@ val generateAppVersion by tasks.registering {
             |
             |/** 由根目录 version.txt 生成，请勿手改 */
             |internal const val APP_VERSION = "$version"
+            |
+            |/** 是否为预览版（version.txt 第二行 Beta=1）；预览版在关于页显示 Beta 标记 */
+            |internal const val APP_IS_PREVIEW = $isPreview
             |""".trimMargin() + "\n"
         )
     }
 }
 kotlin.sourceSets["main"].kotlin.srcDir(generateAppVersion)
+
+// ---- 遮罩选位器 EXE 打进 jar 资源 ----
+// picker\PositionPicker.cs 由 run.ps1 / portable-package.ps1 用 csc 编到仓库根 build\ 下，
+// 这里把它作为资源塞进 jar 的 yunx\ 前缀；运行期由 util/PositionPicker.kt 释放到 %TEMP% 再执行，
+// 因此发布包目录里不再出现这个原生 exe。（文件不存在时 from() 会静默跳过）
+tasks.named<ProcessResources>("processResources") {
+    val pickerExe = rootProject.layout.projectDirectory.file("build/YunX-PositionPicker.exe")
+    from(pickerExe) { into("yunx") }
+}
 
 tasks.withType<Test> {
     useJUnit()
@@ -217,14 +240,14 @@ tasks.register("printRuntimeClasspath") {
 }
 
 // 导出全部运行时依赖 jar 到 build/exportLibs（供便携版打包脚本使用，规避 gradle 缓存路径漂移）
-// ★ 排除 jcef 原生包：发布包改用它重压出来的 jcef-natives.tar.xz（见 JcefNativesPacker），
+// ★ 排除 jcef 原生包：发布包改用它重打出来的 jcef-natives.tar.gz（见 JcefNativesPacker），
 //   开发运行（:desktop:run）仍直接从运行时 classpath 取该 jar，不受影响。
 tasks.register<Sync>("exportRuntimeLibs") {
     from(configurations.runtimeClasspath) { exclude("jcef-natives-*.jar") }
     into(layout.projectDirectory.dir("build/exportLibs"))
 }
 
-// 单独导出 jcef 原生包，供打包脚本重压成 tar.xz
+// 单独导出 jcef 原生包，供打包脚本重打成 tar.gz
 tasks.register<Sync>("exportJcefNatives") {
     from(configurations.runtimeClasspath) { include("jcef-natives-*.jar") }
     into(layout.projectDirectory.dir("build/jcefNatives"))

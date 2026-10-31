@@ -141,6 +141,8 @@ fun DriveScreen(
     onQuarkLogout: () -> Unit,
     /** 夸克云盘下载入队后切换到「下载」Tab */
     onDownloadStarted: () -> Unit = {},
+    /** 递增即「回到全部网盘」：侧栏再次点击网盘 Tab 或离开网盘 Tab 时由上层触发 */
+    homeSignal: Int = 0,
     onUCLogin: () -> Unit,
     onUCLogout: () -> Unit,
     onXunleiLogin: () -> Unit,
@@ -215,6 +217,22 @@ fun DriveScreen(
     var showILanzouCloud by rememberSaveable { mutableStateOf(false) }
     // 蓝奏云云盘浏览：网盘 Tab 内切换（非全屏）
     var showLanzouCloud by rememberSaveable { mutableStateOf(false) }
+    // 「回到全部网盘」：侧栏点网盘 Tab 时把 10 个浏览态一起复位。
+    // 浏览态是 rememberSaveable，不主动清的话切走再切回来还停在刚才那个网盘里。
+    LaunchedEffect(homeSignal) {
+        if (homeSignal > 0) {
+            showCloud = false
+            showUCCloud = false
+            showXunleiCloud = false
+            showBaiduCloud = false
+            showC139Cloud = false
+            showPan123Cloud = false
+            showPan115Cloud = false
+            showGuangYaCloud = false
+            showILanzouCloud = false
+            showLanzouCloud = false
+        }
+    }
 
     // 夸克：登录态由数据库驱动；已登录则副标题显示昵称
     val quark = DriveAccount(

@@ -47,11 +47,13 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.yunx.app.APP_IS_PREVIEW
 import com.yunx.app.ui.BackHandler
 import com.yunx.app.ui.SnackbarController
 import com.yunx.app.data.update.UpdateChecker
@@ -107,7 +109,8 @@ fun AboutScreen(
                 icon = Icons.Outlined.Cloud,
                 title = "应用简介",
                 description = "云析（YunX）是一款网盘分享链接 + 视频链接解析与高速下载工具。" +
-                    "粘贴分享链接或视频短链，登录账号后即可浏览内容、在线预览并直接高速下载。\n" +
+                    "粘贴分享链接或视频短链，登录账号后即可浏览内容、在线预览并直接高速下载；" +
+                    "也支持磁力 / BT 种子 / ed2k 等 P2P 链接下载。\n" +
                     "Windows 桌面端：YunX-Desktop 基于 Compose Multiplatform 构建，" +
                     "在安卓版能力之上补齐桌面交互（右键菜单、文件夹整夹下载、可拖动窗口）。"
             )
@@ -180,11 +183,29 @@ private fun AppHeader(versionName: String) {
             fontWeight = FontWeight.SemiBold
         )
         Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "YunX-Desktop · v$versionName",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "YunX-Desktop · v$versionName",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            // 预览版标记：version.txt 第二行写了 preview / beta 时显示（黄色底，浅深色下都醒目）
+            if (APP_IS_PREVIEW) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = Color(0xFFFFC107)
+                ) {
+                    Text(
+                        text = "Beta",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF3A2A00),
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = "网盘与视频链接解析 · 高速下载",
@@ -322,6 +343,7 @@ private fun FeatureCard() {
         "网盘分享解析" to "夸克 / UC / 迅雷 / 百度 / 139 / 123 / 115 / 光鸭 / 蓝奏云 / 蓝奏云优享版 分享直链识别",
         "视频链接解析" to "哔哩哔哩 / 小红书 / 抖音 / 微博 / 快手 / AcFun / Pixiv；短链、口令、整段文案均可",
         "高速分片下载" to "多线程并发 + 断点续传 + 慢连接自动换线；B 站高清分轨两轨并行后自动合轨",
+        "P2P 下载" to "磁力 / BT 种子 / ed2k 电驴链接交给 Gopeed 引擎下载；支持本地种子文件、Tracker 服务器管理与 DHT 开关",
         "在线预览" to "ffplay 直读直链、真·边下边播（HLS 原生支持）；没装 FFmpeg 时回退内置播放器并可一键下载",
         "Live 图" to "微博 / 抖音动图可存为动态照片、静态图片或视频",
         "多账号与备份" to "网盘与视频平台均支持多账号（主账号 / 备注），认证信息可加密导出 / 导入",
