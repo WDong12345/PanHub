@@ -526,6 +526,39 @@
 | README 友情链接、App 图标、F-Droid 元数据 | **不移植**：桌面 README 与分发渠道独立维护 |
 | `Releases.md` | 采用上游文件（发布说明与版本号同步） |
 
+### 9.18 本次对齐（上游 1.3.3 → 1.3.4，八个提交）
+
+对齐点由 `87ff5d6` 推进到 **`00a030f`**，桌面版本号 **1.3.5**。
+
+#### 已移植
+
+| 上游提交 | 内容 | 桌面实现与取舍 |
+| --- | --- | --- |
+| `d1b888f`(#44) | 续传时弹性分片区间重叠，导致文件膨胀 | 原样采用：`ElasticAllocator` 接收已完成区间并跳过（`completedRanges`），新增 `parseSegRange` 统一解析 `seg_{start}_{end}.part`；补 `ElasticAllocatorTest` |
+| `3700c1c` | 下载完成后关机 / 存储迁移 / 退出稳定性 / 闪屏跟随主题 / 诊断增强 | 原样采用（`SettingsRepository.shutdownWhenDownloadsComplete`、`DownloadViewModel` 常驻观察 + 60s 倒计时、`MainScreen.DownloadShutdownDialog`、`StorageMigrator` 重叠校验、`WindowFx`/`DiagnosticLog` 加固、`launcher` `-XX:ErrorFile`） |
+| `d42633a`(#74) | 百度网盘页下载统一 `UA_NETDISK` | 原样采用：`BaiduCloudViewModel.baiduCloudDownloadHeaders`，单文件 / 文件夹 / 批量 / PendingDownload 统一使用 |
+| `1830497`(#75) | 浏览器插件 Cookie 含非 ASCII 导致 OkHttp 抛错 | 原样采用：请求头落库与读取边界做 UTF-8 百分号编码，覆盖主链 / DASH 音轨 / 备选源 / 重试 |
+| `142fabb`(#80) | 文件夹任务列表按行懒加载（上千文件卡顿） | 原样采用：新增 `DownloadListLayout`（`RootTask` / `FolderHeader` / `FolderChild` 扁平行）+ `FolderDownloadChildRow`，折叠状态用 `rememberSaveable` 保留 |
+| `00a030f` | 版本号 1.3.4 | 桌面按自身版本线取 **1.3.5** |
+
+#### 我方个性化在新结构下的适配（本次重点）
+
+| 能力 | 适配方式 |
+| --- | --- |
+| 文件夹组批量暂停 / 继续 / 删除 | `FolderDownloadGroupHeader` 新增 `onPauseGroup` / `onResumeGroup` / `onRemoveGroup` 三个必填回调，由 `DownloadScreen` 接到 `DownloadViewModel.pauseTasks/resumeTasks/removeTasks` 与组删除确认框；组头按钮原样保留 |
+| 下载子任务层级缩进 | `DownloadSubTaskRow` 增加 `depth` 参数（按 `fileName` 的 `/` 数量减一），`FolderDownloadChildRow` 传入并按 `depth * 16dp` 缩进 |
+| 子任务按相对路径排序 | 写进 `DownloadListLayout.rows()`：先失败置顶、再按 `fileName.lowercase()` 排序，保证同目录相邻、缩进层级连续（否则上游原实现只按状态排序会打乱层级） |
+| 左侧层级引导竖线 | 懒加载后无法再画整组贯穿线，改为每行 `drawBehind` 自绘一段，逐行相接 |
+| 下载列表底部 140dp 留白 | 保留 140dp（上游 96dp），避免最后一行文件夹组头被悬浮「+」按钮遮挡 |
+| 目录前缀弱化、文件名强调 | `DownloadSubTaskRow` 用 `buildAnnotatedString`，目录前缀用 `onSurfaceVariant`、文件名保持 `FontWeight.Medium` |
+
+#### 验证
+
+- `gradle :desktop:compileKotlin` 通过
+- `gradle :desktop:test --tests "com.yunx.app.data.download.*"` 通过（含 `DownloadListLayoutTest` / `ElasticAllocatorTest` / 百度下载头单测）
+- 启动冒烟：主窗口 1100x760 正常渲染；设置页可见「免转存下载」「下载时同时保存到网盘（夸克）」；下载页空态正常
+
+
 
 
 

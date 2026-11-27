@@ -82,6 +82,8 @@ data class DownloadStats(
 
 private const val TAG = "YunX-DL"
 
+private const val HEX_DIGITS = "0123456789ABCDEF"
+
 /**
  * 单个「在飞分片」的调试快照（下载调试页用）。
  * 一路在飞分片就对应一个正在干活的 worker，所以这张表就是「每个线程此刻在干什么」。
@@ -186,6 +188,21 @@ private const val RANGE_IGNORED_TOLERANCE = 3
 private data class RetryRange(val start: Long, val end: Long, val file: File)
 
 /**
+ * 解析弹性块文件名 `seg_{start}_{end}.part` → 字节区间；文件名不合法返回 null。
+ *
+ * 弹性块的文件名即它覆盖的区间，续传时靠它判断哪些块已完成。这个解析散落在续传准备、
+ * 进度统计、失败重试、合并排序等多处，统一在这里，改命名规则时只改这一处。
+ */
+private fun parseSegRange(file: File): LongRange? {
+    val name = file.name
+    if (!name.startsWith("seg_") || !name.endsWith(".part")) return null
+    val body = name.removePrefix("seg_").removeSuffix(".part")
+    val s = body.substringBefore('_').toLongOrNull() ?: return null
+    val e = body.substringAfter('_').toLongOrNull() ?: return null
+    return s..e
+}
+
+/**
  * 弹性区动态分片分配器（IDM 式）。
  * 核心矛盾：块太大会让尾部只剩少数几个大块 → 空闲线程空转（"最后一点特别慢"）；
  * 块太小会产生海量 Range 请求 → 拖慢快连接。故不再用固定块，改为**实时速度自适应 + 尾部收缩**：
@@ -194,15 +211,23 @@ private data class RetryRange(val start: Long, val end: Long, val file: File)
  * - 稳定后块 ≈ 单 worker 下载 TARGET_SECONDS 秒的量：快则大块（省 Range 开销），慢则小块（充分并行摊平拖尾）；
  * - 尾部收缩：剩余字节 <= workers*块 时，把块压到 remaining/workers，让全部连接并行冲完最后一段，
  *   彻底消除"其他分片下完、只剩最后一个线程慢慢爬"的拖尾塌缩。
+ *
+ * 续传：[completedRanges] 是磁盘上已完整的弹性块区间，可能乱序完成（有空缺）。分配时跳过这些
+ * 区间，并把新块截断在下一个已完成区间的起点之前，因此绝不会重复下载或覆盖已完成的字节。
+ * 注意：被跳过的已完成块不登记分片摘要，因而不参与合并时的逐片 SHA-256 校验 ——
+ * 重读全部已完成区间代价过大，这部分只以「文件长度 = 区间长度」把关。
  */
-private class ElasticAllocator(
+internal class ElasticAllocator(
     private val total: Long,
     private val elasticStart: Long,
     private val workers: Int,
-    private val chunkSize: Long
+    private val chunkSize: Long,
+    completedRanges: List<LongRange> = emptyList()
 ) {
     private val lock = Any()
     private var nextStart = elasticStart
+    private val completed = completedRanges.sortedBy { it.first }
+    private var completedIndex = 0
 
     /** 最近实测总速度（字节/秒），由外部实时注入；<=0 表示尚未探测到 */
     @Volatile
@@ -210,8 +235,16 @@ private class ElasticAllocator(
 
     /** 领取下一个弹性块（按字节顺序；块大小随速度与剩余量动态收缩） */
     fun take(): LongRange? = synchronized(lock) {
+        // 完整块可能乱序完成；跨过所有已完成区间，而不只是连续前缀。
+        while (completedIndex < completed.size) {
+            val range = completed[completedIndex]
+            if (range.first > nextStart) break
+            nextStart = maxOf(nextStart, range.last + 1)
+            completedIndex++
+        }
         if (nextStart >= total) return null
-        val remaining = total - nextStart
+        val gapEnd = completed.getOrNull(completedIndex)?.first ?: total
+        val remaining = gapEnd - nextStart
         val base = baseBlockSize()
         // ★ 尾部收缩：剩余不足 workers 个整块时，均分到约 workers 份，让全部连接忙到最后；
         //   下限 MIN_TAIL_BLOCK（不碎成海量请求），上限 base（块不会越滚越大）。
@@ -222,7 +255,7 @@ private class ElasticAllocator(
             base
         }
         val s = nextStart
-        val e = minOf(s + block - 1, total - 1)
+        val e = minOf(s + block - 1, gapEnd - 1)
         nextStart = e + 1
         s..e
     }
@@ -233,11 +266,6 @@ private class ElasticAllocator(
         val perWorker = (recentSpeedBps / w).coerceAtLeast(0L)
         if (perWorker <= 0L) return chunkSize.coerceIn(MIN_ELASTIC_BLOCK, MAX_ELASTIC_BLOCK)
         return (perWorker * TARGET_SECONDS).coerceIn(MIN_ELASTIC_BLOCK, MAX_ELASTIC_BLOCK)
-    }
-
-    /** 断点续传：跳过已下载前缀（nextStart 只前进） */
-    fun skipTo(start: Long) = synchronized(lock) {
-        if (start > nextStart) nextStart = start
     }
 
     companion object {
@@ -1640,12 +1668,41 @@ class DownloadManager(
 
     // ---------- 内部实现 ----------
 
+    /**
+     * HTTP 头值只允许可见 ASCII（0x20..0x7E），OkHttp 的 Headers 校验遇到中文等非 ASCII 字符会直接抛
+     * IllegalArgumentException（"Unexpected char 0x4e2d ... in Cookie value"）。浏览器插件把页面 Cookie
+     * 原样带回时可能含未按 RFC 6265 编码的非 ASCII，这里按 UTF-8 百分号编码后再用，信息不丢失且能通过校验。
+     */
+    private fun sanitizeHeaderValue(value: String): String {
+        if (value.all { it.code in 0x20..0x7E }) return value
+        val sb = StringBuilder(value.length + 16)
+        var i = 0
+        while (i < value.length) {
+            val cp = value.codePointAt(i)
+            if (cp in 0x20..0x7E) {
+                sb.append(cp.toChar())
+            } else {
+                String(Character.toChars(cp)).toByteArray(Charsets.UTF_8).forEach { b ->
+                    val v = b.toInt() and 0xFF
+                    sb.append('%').append(HEX_DIGITS[v shr 4]).append(HEX_DIGITS[v and 0xF])
+                }
+            }
+            i += Character.charCount(cp)
+        }
+        return sb.toString()
+    }
+
+    private fun sanitizeHeaders(headers: Map<String, String>): Map<String, String> =
+        if (headers.isEmpty()) headers else headers.mapValues { (_, v) -> sanitizeHeaderValue(v) }
+
     /** 请求头落库：整体按 [key] 加密（下载主链用 `download.requestHeaders`，DASH 音轨用 `download.mergeAudioHeaders`） */
     private fun encodeHeaders(
         headers: Map<String, String>,
         key: String = "download.requestHeaders"
     ): String {
-        val json = JSONObject().apply { headers.forEach { (name, value) -> put(name, value) } }.toString()
+        val json = JSONObject().apply {
+            sanitizeHeaders(headers).forEach { (name, value) -> put(name, value) }
+        }.toString()
         return credentialCipher.encrypt(json, key)
     }
 
@@ -1663,7 +1720,9 @@ class DownloadManager(
                     put("url", source.url)
                     put(
                         "headers",
-                        JSONObject().apply { source.headers.forEach { (name, value) -> put(name, value) } }
+                        JSONObject().apply {
+                            sanitizeHeaders(source.headers).forEach { (name, value) -> put(name, value) }
+                        }
                     )
                 }
             )
@@ -1688,7 +1747,9 @@ class DownloadManager(
                     if (url.isBlank()) continue
                     val headersJson = obj.optJSONObject("headers")
                     val headers = buildMap {
-                        headersJson?.keys()?.forEach { name -> put(name, headersJson.getString(name)) }
+                        headersJson?.keys()?.forEach { name ->
+                            put(name, sanitizeHeaderValue(headersJson.getString(name)))
+                        }
                     }
                     add(DownloadSource(url, headers))
                 }
@@ -1706,7 +1767,7 @@ class DownloadManager(
             val jsonText = credentialCipher.decrypt(stored, "download.requestHeaders")
             val json = JSONObject(jsonText)
             buildMap {
-                json.keys().forEach { name -> put(name, json.getString(name)) }
+                json.keys().forEach { name -> put(name, sanitizeHeaderValue(json.getString(name))) }
             }.also {
                 if (!credentialCipher.isEncrypted(stored)) {
                     dao.updateRequestHeaders(id, encodeHeaders(it))
@@ -1731,7 +1792,9 @@ class DownloadManager(
         if (stored.isBlank()) return emptyMap()
         return runCatching {
             val json = JSONObject(credentialCipher.decrypt(stored, "download.mergeAudioHeaders"))
-            buildMap { json.keys().forEach { name -> put(name, json.getString(name)) } }
+            buildMap {
+                json.keys().forEach { name -> put(name, sanitizeHeaderValue(json.getString(name))) }
+            }
         }.getOrElse {
             Log.w(TAG, "loadPersistedMergeAudioHeaders: 解密失败，本次音轨不带请求头：${it.message}")
             emptyMap()
@@ -2060,6 +2123,27 @@ class DownloadManager(
         // 注册实时统计：线程数 = 实际并发（受安全上限与内存预算约束）
         _stats.update { it + (id to DownloadStats(0L, -1L, actualWorkers)) }
 
+        // ★ 弹性区分配器（IDM 式动态分片）：按字节顺序发块、区间物理相邻，替代中点劈分（根治中后段掉速）。
+        //   续传：不完整 seg 删除重下；所有完整 seg 都登记到分配器，补洞时不覆盖已完成区间。
+        //   块大小随实时速度自适应并尾部收缩，保证全部连接忙到最后一块，消除"末尾只剩少数大块 → 拖尾特别慢"。
+        val completedElasticRanges = mutableListOf<LongRange>()
+        if (elasticStart < total) {
+            // 一趟遍历办两件事：
+            // - 不完整 seg 删除（重下）；
+            // - 完整块登记为「已完成区间」，包括空缺后方先完成的块（此前只推进连续前缀，那些块会被重复下载）。
+            //   只登记落在弹性区（>= elasticStart）的块，与下方进度统计口径一致，避免旧计划残留被当成已完成跳过。
+            chunkDir.listFiles { f -> f.name.startsWith("seg_") && f.name.endsWith(".part") }?.forEach { f ->
+                val range = parseSegRange(f) ?: return@forEach
+                if (f.length() < (range.last - range.first + 1)) {
+                    f.delete()
+                } else if (range.first >= elasticStart) {
+                    completedElasticRanges += range
+                }
+            }
+            completedElasticRanges.sortBy { it.first }
+        }
+        val elasticAllocator = ElasticAllocator(total, elasticStart, actualWorkers, chunkSize, completedElasticRanges)
+
         // 统计已有 part/seg 大小（断点续传起点）。
         // ★★ 必须按「当前计划」逐片校验，不能直接按磁盘长度求和：
         //    旧 job 残留的分片可能与当前计划重叠（分片数/片大小改过就必然错位），
@@ -2076,12 +2160,12 @@ class DownloadManager(
         val segRegionStart = mainPoolCount.toLong() * chunkSize
         chunkDir.listFiles { f -> f.name.startsWith("seg_") && f.name.endsWith(".part") }
             ?.forEach { f ->
-                val name = f.name.removePrefix("seg_").removeSuffix(".part")
-                val segStart = name.substringBefore('_').toLongOrNull()
-                val segEnd = name.substringAfter('_', "").toLongOrNull()
+                val range = parseSegRange(f) ?: return@forEach
                 // 落在主池区间里的 seg 属于旧计划残留：不计入（否则与主池的 part 重复计数）
-                if (segStart != null && segEnd != null && segStart >= segRegionStart) {
-                    downloaded.addAndGet(f.length().coerceIn(0L, (segEnd - segStart + 1).coerceAtLeast(0L)))
+                if (range.first >= segRegionStart) {
+                    downloaded.addAndGet(
+                        f.length().coerceIn(0L, (range.last - range.first + 1).coerceAtLeast(0L))
+                    )
                 }
             }
         // ★ 钳制到 total：防旧 job 残留累加导致显示"已下载 > 总大小"
@@ -2104,32 +2188,6 @@ class DownloadManager(
         val failReason = java.util.concurrent.atomic.AtomicReference<String?>(null)
         val rangeIgnoredCount = AtomicInteger(0)         // RANGE_IGNORED 累计次数（偶发 200 容忍）
 
-        // ★ 弹性区分配器（IDM 式动态分片）：按字节顺序发块、区间物理相邻，替代中点劈分（根治中后段掉速）。
-        //   续传：不完整 seg 删除重下；完整 seg 前缀推进 nextStart（弹性区按序分配，完成块天然是字节前缀）。
-        //   块大小随实时速度自适应并尾部收缩，保证全部连接忙到最后一块，消除"末尾只剩少数大块 → 拖尾特别慢"。
-        val elasticAllocator = ElasticAllocator(total, elasticStart, actualWorkers, chunkSize)
-        if (elasticStart < total) {
-            // 不完整 seg 删除（重下）
-            chunkDir.listFiles { f -> f.name.startsWith("seg_") && f.name.endsWith(".part") }?.forEach { f ->
-                val name = f.name.removePrefix("seg_").removeSuffix(".part")
-                val s = name.substringBefore('_').toLongOrNull() ?: return@forEach
-                val e = name.substringAfter('_').toLongOrNull() ?: return@forEach
-                if (f.length() < (e - s + 1)) f.delete()
-            }
-            // 推进到已完整前缀末尾（只前进，跳过已下载弹性块）
-            val doneSegs = chunkDir.listFiles { f -> f.name.startsWith("seg_") && f.name.endsWith(".part") }
-                ?.mapNotNull { f ->
-                    val name = f.name.removePrefix("seg_").removeSuffix(".part")
-                    val s = name.substringBefore('_').toLongOrNull() ?: return@mapNotNull null
-                    val e = name.substringAfter('_').toLongOrNull() ?: return@mapNotNull null
-                    if (f.length() >= (e - s + 1)) s to e else null
-                }?.sortedBy { it.first } ?: emptyList()
-            var resumeNext = elasticStart
-            for ((s, e) in doneSegs) {
-                if (s == resumeNext) resumeNext = e + 1 else break
-            }
-            elasticAllocator.skipTo(resumeNext)
-        }
         val elasticResults = ConcurrentHashMap<String, ChunkResult>()
         // 在飞分片表（key = m<片号> / seg@<起点> / retry@<起点>）：仅供看门狗算瞬时速度与抢占判定
         val inflightChunks = ConcurrentHashMap<String, InflightChunk>()
@@ -2345,10 +2403,10 @@ class DownloadManager(
             }
             // 弹性区：磁盘上长度不足的区间（worker 报 OK 也不放行）
             chunkDir.listFiles { f -> f.name.startsWith("seg_") && f.name.endsWith(".part") }?.forEach { f ->
-                val key = f.name.removePrefix("seg_").removeSuffix(".part")
-                val s = key.substringBefore('_').toLongOrNull() ?: return@forEach
-                val e = key.substringAfter('_').toLongOrNull() ?: return@forEach
-                if (f.length() < (e - s + 1) && seen.add(s)) add(RetryRange(s, e, f))
+                val range = parseSegRange(f) ?: return@forEach
+                if (f.length() < (range.last - range.first + 1) && seen.add(range.first)) {
+                    add(RetryRange(range.first, range.last, f))
+                }
             }
         }
         if (missing.isNotEmpty()) {
@@ -2439,7 +2497,7 @@ class DownloadManager(
         val mainFiles = (0 until mainPoolCount).map { File(chunkDir, "part_$it") }
         val elasticFiles = chunkDir.listFiles { f ->
             f.name.startsWith("seg_") && f.name.endsWith(".part")
-        }?.sortedBy { it.name.removePrefix("seg_").substringBefore('_').toLong() }
+        }?.sortedBy { parseSegRange(it)?.first ?: Long.MAX_VALUE }
             ?: emptyList()
         return mainFiles + elasticFiles
     }

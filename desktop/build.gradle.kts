@@ -157,18 +157,22 @@ tasks.register<JavaExec>("testInProcess") {
         "com.yunx.app.data.network.StarSeaApiTest",
         "com.yunx.app.data.download.HlsRequestPolicyTest",
         "com.yunx.app.data.download.HttpRangePolicyTest",
+        "com.yunx.app.data.download.ElasticAllocatorTest",
         "com.yunx.app.data.download.DownloadPathPolicyTest",
         "com.yunx.app.data.download.DownloadGroupingTest",
+        "com.yunx.app.data.download.DownloadListLayoutTest",
         "com.yunx.app.data.download.DirectPartManifestTest",
         "com.yunx.app.data.download.DownloadSaverTest",
         "com.yunx.app.data.download.ChunkDownloaderDirectTest",
         "com.yunx.app.data.download.DownloadCacheMaintenanceTest",
         "com.yunx.app.data.download.DownloadManagerDirectIntegrationTest",
         "com.yunx.app.data.db.SecureAccountDaosTest",
+        "com.yunx.app.data.storage.StorageMigratorTest",
         "com.yunx.app.data.security.DbKeyStoreTest",
         "com.yunx.app.ui.login.XunleiVerificationPolicyTest",
         "com.yunx.app.data.network.XunleiWebCredentialTest",
-        "com.yunx.app.util.LogRedactorTest"
+        "com.yunx.app.util.LogRedactorTest",
+        "com.yunx.app.ui.viewmodel.BaiduCloudDownloadHeadersTest"
     )
 }
 
